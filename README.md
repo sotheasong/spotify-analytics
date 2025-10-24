@@ -1,3 +1,3 @@
 # spotify-analytics
 
-pip install flask requests
+pip install -r requirements.txt
