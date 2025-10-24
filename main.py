@@ -2,7 +2,15 @@ import requests
 from flask import Flask, redirect, request, jsonify, session
 import os
 import urllib.parse
+import json
+import pandas as pd
+import numpy as np
 from datetime import datetime
+
+from analysis.cleaning import clean_top_tracks
+
+
+
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -59,11 +67,11 @@ def callback():
   session['expires_at'] = token_info['expires_in'] 
   session['expires_at'] = datetime.now().timestamp() + token_info['expires_in']
 
-  return redirect("/top-artists")
+  return redirect("/get-info")
 
 
-@app.route("/top-artists")
-def get_playlists():
+@app.route("/get-info")
+def get_info():
   access_token = session.get('access_token')
   if not access_token:
     return redirect("/login")
@@ -75,10 +83,19 @@ def get_playlists():
     "Authorization": f"Bearer {access_token}"
   }
   
-  response = requests.get(f"{API_BASE_URL}me/top/{"artists"}", headers=headers)
-  top_artists = response.json()
+  tracks_res = requests.get(f"{API_BASE_URL}me/top/tracks?limit=50", headers=headers)
+  tracks = tracks_res.json()['items']
+
+  ids = [t['id'] for t in tracks]
+  # features_res = requests.get(f"{API_BASE_URL}audio-features?ids={','.join(ids)}", headers=headers)
+
+  df_tracks = clean_top_tracks(tracks)
+  # df_features = pd.DataFrame(features)
+  # df = pd.concat([df_tracks, df_features], axis=1)
+
+  df_tracks.to_csv("data/processed_tracks.csv", index=False)
   
-  return jsonify(top_artists)
+  return jsonify({"message": "Data saved successfully!", "num_tracks": len(df_tracks)})
 
 
 @app.route("/refresh_token")
@@ -100,7 +117,7 @@ def refresh_token():
     session['access_token'] = token_info['access_token']
     session['expires_at'] = datetime.now().timestamp() + token_info['expires_in']
 
-    return redirect("/top-artists")
+    return redirect("/get-info")
   
 
 if __name__ == "__main__":
