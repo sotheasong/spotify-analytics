@@ -1,10 +1,46 @@
 import pandas as pd
 
-def clean_top_tracks(tracks_json):
-  """
-  Cleans the Spotify top tracks data into a flat, analysis-ready DataFrame.
-  """
+def clean_top_artists(artists_json):
+  df = pd.json_normalize(artists_json)
 
+  keep_cols = [
+    'id',
+    'name',
+    'popularity',
+    'genres',
+    'followers.total'
+  ]
+  df = df[keep_cols]
+
+  df['genres'] = df['genres'].apply(lambda x: ', '.join(x) if isinstance(x, list) else '')
+  
+  df = df.rename(columns={'followers.total': 'follower_count'})
+  return df
+
+def clean_recents(recent_json):
+  df = pd.json_normalize(recent_json)
+  keep_cols = [
+      'track.id',
+      'track.name',
+      'track.artists',
+      'track.album.name',
+      'played_at'
+  ]
+  df = df[keep_cols]
+  df['artist_name'] = df['track.artists'].apply(
+      lambda x: x[0]['name'] if isinstance(x, list) and len(x) > 0 else None
+  )
+  df = df.drop(columns=['track.artists'])
+  df['played_at'] = pd.to_datetime(df['played_at'], errors='coerce')
+  df = df.rename(columns={
+      'track.id': 'track_id',
+      'track.name': 'track_name',
+      'track.album.name': 'album_name',
+      'played_at': 'played_at'
+  })
+  return df
+
+def clean_top_tracks(tracks_json):
   # Flatten nested JSON (e.g. album.name -> 'album.name')
   df = pd.json_normalize(tracks_json)
 
@@ -43,6 +79,7 @@ def clean_top_tracks(tracks_json):
   # Reorder columns neatly
   df = df[
       [
+          'id',
           'name',
           'artist_name',
           'album.name',

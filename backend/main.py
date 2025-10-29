@@ -1,14 +1,17 @@
 import requests
-from flask import Flask, redirect, request, jsonify, session
+from flask import Flask, redirect, request, jsonify, session, Response, render_template
 import os
 import urllib.parse
 import json
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import seaborn as sns
+import matplotlib.pyplot as plt
+import io
 
-from analysis.cleaning import clean_top_tracks
-
+from analysis.cleaning import clean_top_artists, clean_recents, clean_top_tracks
+from analysis.analysis import genre_chart
 
 
 
@@ -31,7 +34,7 @@ def index():
 
 @app.route("/login")
 def login():
-  scope = "user-read-private user-read-email user-read-playback-position user-top-read"
+  scope = "user-read-private user-read-email user-read-playback-position user-top-read user-read-recently-played"
   params = {
       "response_type": "code",
       "redirect_uri": REDIRECT_URI,
@@ -83,19 +86,29 @@ def get_info():
     "Authorization": f"Bearer {access_token}"
   }
   
-  tracks_res = requests.get(f"{API_BASE_URL}me/top/tracks?limit=50", headers=headers)
+  tracks_res = requests.get(f"{API_BASE_URL}me/top/tracks?time_range=long_term&limit=50", headers=headers)
   tracks = tracks_res.json()['items']
 
-  ids = [t['id'] for t in tracks]
-  # features_res = requests.get(f"{API_BASE_URL}audio-features?ids={','.join(ids)}", headers=headers)
+  # ids = [t['id'] for t in tracks] 
+
+  artists_res = requests.get(f"{API_BASE_URL}me/top/artists?time_range=long_term&limit=50", headers=headers)
+  artists = artists_res.json()['items']
+
+  recent_res = requests.get(f"{API_BASE_URL}me/player/recently-played?limit=50", headers=headers)
+  recent = recent_res.json()['items']
+
 
   df_tracks = clean_top_tracks(tracks)
-  # df_features = pd.DataFrame(features)
-  # df = pd.concat([df_tracks, df_features], axis=1)
+  df_artists = clean_top_artists(artists)
+  df_recent = clean_recents(recent)
 
   df_tracks.to_csv("data/processed_tracks.csv", index=False)
-  
-  return jsonify({"message": "Data saved successfully!", "num_tracks": len(df_tracks)})
+  df_artists.to_csv("data/processed_artists.csv", index=False)
+  df_recent.to_csv("data/processed_recent.csv", index=False)
+
+  genre_plot = genre_chart(artists)
+
+  return render_template("dashboard.html", genre_plot=genre_plot)
 
 
 @app.route("/refresh_token")
