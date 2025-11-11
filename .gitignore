@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+*.sqlite3
+*.db
+*.csv   # optional, if you don't want to push processed CSVs
+
+# Node / React
+node_modules/
+dist/          # React production build
+npm-debug.log*
+yarn-error.log*
+
+# Secrets
+.env
+.env.local

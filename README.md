@@ -10,5 +10,4 @@ flask run
 # backend
 
 npm create vite@latest frontend -- --template react
-
 npm install
