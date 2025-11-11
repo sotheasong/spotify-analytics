@@ -9,11 +9,10 @@ from datetime import datetime
 import seaborn as sns
 import matplotlib.pyplot as plt
 import io
+from flask_cors import CORS
 
 from analysis.cleaning import clean_top_artists, clean_recents, clean_top_tracks
 from analysis.analysis import genre_chart
-
-
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -102,13 +101,19 @@ def get_info():
   df_artists = clean_top_artists(artists)
   df_recent = clean_recents(recent)
 
-  df_tracks.to_csv("data/processed_tracks.csv", index=False)
-  df_artists.to_csv("data/processed_artists.csv", index=False)
-  df_recent.to_csv("data/processed_recent.csv", index=False)
+  df_tracks.to_csv("../data/processed_tracks.csv", index=False)
+  df_artists.to_csv("../data/processed_artists.csv", index=False)
+  df_recent.to_csv("../data/processed_recent.csv", index=False)
 
   genre_plot = genre_chart(artists)
 
-  return render_template("dashboard.html", genre_plot=genre_plot)
+  return jsonify({
+    "message": "Data fetched and processed successfully.",
+    "tracks_sample": df_tracks.head().to_dict(orient='records'),
+    "artists_sample": df_artists.head().to_dict(orient='records'),
+    "recent_sample": df_recent.head().to_dict(orient='records'),
+    "genre_plot": genre_plot
+  })
 
 
 @app.route("/refresh_token")
@@ -132,6 +137,7 @@ def refresh_token():
 
     return redirect("/get-info")
   
+CORS(app)
 
-if __name__ == "__main__":
+if __name__ == "__app__":
   app.run(host="0.0.0.0", debug=True)
