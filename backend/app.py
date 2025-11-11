@@ -22,6 +22,8 @@ client_secret = os.getenv("CLIENT_SECRET")
 
 REDIRECT_URI = "http://127.0.0.1:5000/callback"
 
+FRONTEND_URI = "http://localhost:5173/"
+
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE_URL = "https://api.spotify.com/v1/"
@@ -107,13 +109,7 @@ def get_info():
 
   genre_plot = genre_chart(artists)
 
-  return jsonify({
-    "message": "Data fetched and processed successfully.",
-    "tracks_sample": df_tracks.head().to_dict(orient='records'),
-    "artists_sample": df_artists.head().to_dict(orient='records'),
-    "recent_sample": df_recent.head().to_dict(orient='records'),
-    "genre_plot": genre_plot
-  })
+  return redirect(f"{FRONTEND_URI}/analytics")
 
 
 @app.route("/refresh_token")
