@@ -14,6 +14,10 @@ from flask_cors import CORS
 from analysis.cleaning import clean_top_artists, clean_recents, clean_top_tracks
 from analysis.analysis import genre_chart
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
@@ -22,7 +26,7 @@ client_secret = os.getenv("CLIENT_SECRET")
 
 REDIRECT_URI = "http://127.0.0.1:5000/callback"
 
-FRONTEND_URI = "http://localhost:5173/"
+FRONTEND_URI = "http://localhost:5173"
 
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -35,6 +39,8 @@ def index():
 
 @app.route("/login")
 def login():
+  print("Client ID:", client_id)
+  print("Redirect URI:", REDIRECT_URI)
   scope = "user-read-private user-read-email user-read-playback-position user-top-read user-read-recently-played"
   params = {
       "response_type": "code",
