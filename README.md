@@ -11,3 +11,5 @@ flask run
 
 npm create vite@latest frontend -- --template react
 npm install
+
+cd C:\Users\songs\Desktop\111\Misc code\spotify-analytics && python backend/jobs/daily_snapshot.py >> data/history/snapshot.log 2>&1
