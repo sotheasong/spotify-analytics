@@ -102,11 +102,28 @@ def get_info():
   df_artists = clean_top_artists(artists)
   df_recent = clean_recents(recent)
 
-  df_tracks.to_csv("../data/processed_tracks.csv", index=True)
-  df_artists.to_csv("../data/processed_artists.csv", index=True)
-  df_recent.to_csv("../data/processed_recent.csv", index=True)
+  df_audio_recent = pd.DataFrame()
+  for t in recent:
+    id = t['track']['id']
+    url = f"https://api.reccobeats.com/v1/audio-features?ids={id}"
+    payload = {}
+    headers = {
+      'Accept': 'application/json'
+    }
+    response = requests.request("GET", url, headers=headers, data=payload)
+    features = response.json()['content']
+    
+    headers = {
+      "Authorization": f"Bearer {access_token}"
+    }
 
-  df = pd.DataFrame()
+    df_features = pd.json_normalize(features)
+    df_features['id'] = id
+    name = requests.get(f"{API_BASE_URL}tracks/{id}", headers=headers).json()
+    df_features['name'] = name['name']
+    df_audio_recent = pd.concat([df_audio_recent, df_features], ignore_index=True)
+
+  df_audio_top = pd.DataFrame()
   for t in tracks:
     id = t['id']
     url = f"https://api.reccobeats.com/v1/audio-features?ids={id}"
@@ -125,10 +142,15 @@ def get_info():
     df_features['id'] = id
     name = requests.get(f"{API_BASE_URL}tracks/{id}", headers=headers).json()
     df_features['name'] = name['name']
-    df = pd.concat([df, df_features], ignore_index=True)
+    df_audio_top = pd.concat([df_audio_top, df_features], ignore_index=True)
 
-  df = clean_audio_features(df)
-  df.to_csv("../data/processed_audio_features.csv", index=False)
+  df_audio_recent = clean_audio_features(df_audio_recent)
+  df_audio_recent.to_csv("../data/processed_audio_features_recents.csv", index=False)
+  df_tracks.to_csv("../data/processed_tracks.csv", index=True)
+  df_artists.to_csv("../data/processed_artists.csv", index=True)
+  df_recent.to_csv("../data/processed_recent.csv", index=True)
+  df_audio_top = clean_audio_features(df_audio_top)
+  df_audio_top.to_csv("../data/processed_audio_features.csv", index=False)
 
   return jsonify({"status": "data fetched and cleaned"})
 
