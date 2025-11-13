@@ -1,20 +1,18 @@
-import requests
-from flask import Flask, redirect, request, jsonify, session, Response, render_template
+import json
 import os
 import urllib.parse
-import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Tuple
+
 import pandas as pd
-import numpy as np
-from datetime import datetime
-import seaborn as sns
-import matplotlib.pyplot as plt
-import io
+import requests
+from dotenv import load_dotenv
+from flask import Flask, jsonify, redirect, request, session
 from flask_cors import CORS
 
-from analysis.cleaning import clean_top_artists, clean_recents, clean_top_tracks
+from analysis.cleaning import clean_top_artists, clean_recents, clean_top_tracks, clean_audio_features
 from analysis.analysis import genre_chart
-
-from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -39,8 +37,6 @@ def index():
 
 @app.route("/login")
 def login():
-  print("Client ID:", client_id)
-  print("Redirect URI:", REDIRECT_URI)
   scope = "user-read-private user-read-email user-read-playback-position user-top-read user-read-recently-played"
   params = {
       "response_type": "code",
@@ -96,26 +92,45 @@ def get_info():
   tracks_res = requests.get(f"{API_BASE_URL}me/top/tracks?time_range=long_term&limit=50", headers=headers)
   tracks = tracks_res.json()['items']
 
-  # ids = [t['id'] for t in tracks] 
-
   artists_res = requests.get(f"{API_BASE_URL}me/top/artists?time_range=long_term&limit=50", headers=headers)
   artists = artists_res.json()['items']
 
   recent_res = requests.get(f"{API_BASE_URL}me/player/recently-played?limit=50", headers=headers)
   recent = recent_res.json()['items']
 
-
   df_tracks = clean_top_tracks(tracks)
   df_artists = clean_top_artists(artists)
   df_recent = clean_recents(recent)
 
-  df_tracks.to_csv("../data/processed_tracks.csv", index=False)
-  df_artists.to_csv("../data/processed_artists.csv", index=False)
-  df_recent.to_csv("../data/processed_recent.csv", index=False)
+  df_tracks.to_csv("../data/processed_tracks.csv", index=True)
+  df_artists.to_csv("../data/processed_artists.csv", index=True)
+  df_recent.to_csv("../data/processed_recent.csv", index=True)
 
-  genre_plot = genre_chart(artists)
+  df = pd.DataFrame()
+  for t in tracks:
+    id = t['id']
+    url = f"https://api.reccobeats.com/v1/audio-features?ids={id}"
+    payload = {}
+    headers = {
+      'Accept': 'application/json'
+    }
+    response = requests.request("GET", url, headers=headers, data=payload)
+    features = response.json()['content']
+    
+    headers = {
+      "Authorization": f"Bearer {access_token}"
+    }
 
-  return redirect(f"{FRONTEND_URI}/analytics")
+    df_features = pd.json_normalize(features)
+    df_features['id'] = id
+    name = requests.get(f"{API_BASE_URL}tracks/{id}", headers=headers).json()
+    df_features['name'] = name['name']
+    df = pd.concat([df, df_features], ignore_index=True)
+
+  df = clean_audio_features(df)
+  df.to_csv("../data/processed_audio_features.csv", index=False)
+
+  return jsonify({"status": "data fetched and cleaned"})
 
 
 @app.route("/refresh_token")

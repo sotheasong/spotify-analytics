@@ -1,4 +1,7 @@
 import pandas as pd
+import requests
+
+API_BASE_URL = "https://api.spotify.com/v1/"
 
 def clean_top_artists(artists_json):
   df = pd.json_normalize(artists_json)
@@ -97,4 +100,24 @@ def clean_top_tracks(tracks_json):
       'album.release_date': 'release_date'
   })
 
+  return df
+
+def clean_audio_features(features_json):
+  df = features_json
+  keep_cols = [
+      'id',
+      'name',
+      'acousticness',
+      'danceability',
+      'energy',
+      'instrumentalness',
+      'key',
+      'liveness',
+      'loudness',
+      'mode',
+      'speechiness',
+      'valence',
+      'tempo'
+  ]
+  df = df[keep_cols]
   return df
