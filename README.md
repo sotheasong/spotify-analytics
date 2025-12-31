@@ -1,11 +1,19 @@
 # spotify-analytics
 
 # frontend
+
 cd backend
+
 python3 -m venv venv
+
 source venv/bin/activate # or .\venv\Scripts\activate for Windows
+
 pip install -r ../requirements.txt
+
 flask run
+
+or python -m backend.app
+or python -m backend.jobs.daily_snapshot
 
 # backend
 

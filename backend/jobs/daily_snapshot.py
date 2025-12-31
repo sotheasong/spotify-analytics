@@ -9,10 +9,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-  sys.path.insert(0, str(PROJECT_ROOT))
-
 from backend.app import (
     collect_user_datasets,
     load_persisted_refresh_token,
@@ -20,8 +16,6 @@ from backend.app import (
     refresh_access_token,
     store_refresh_token,
 )
-
-
 
 def resolve_refresh_token(args: argparse.Namespace) -> str:
   """Resolve the refresh token from CLI args, env vars, or stored file."""

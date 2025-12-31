@@ -13,7 +13,7 @@ from flask_cors import CORS
 from concurrent.futures import ThreadPoolExecutor
 
 
-from analysis.cleaning import (
+from backend.analysis.cleaning import (
     clean_recents,
     clean_top_artists,
     clean_top_tracks,
