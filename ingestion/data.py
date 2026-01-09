@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import os
 
 # Base directory where daily snapshots are saved
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_DIR = PROJECT_ROOT / "data" / "history"
 
 from sqlalchemy import text

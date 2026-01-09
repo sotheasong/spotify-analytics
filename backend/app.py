@@ -13,7 +13,7 @@ from flask_cors import CORS
 from concurrent.futures import ThreadPoolExecutor
 
 
-from .analysis.cleaning import (
+from ..ingestion.cleaning import (
     clean_recents,
     clean_top_artists,
     clean_top_tracks,
@@ -41,7 +41,7 @@ APP_DIR = Path(__file__).resolve().parent
 REPO_ROOT = APP_DIR.parent
 DATA_DIR = REPO_ROOT / "data"
 HISTORY_DIR = DATA_DIR / "history"
-AUTH_DIR = DATA_DIR / "auth"
+AUTH_DIR = REPO_ROOT / "auth"
 REFRESH_TOKEN_PATH = AUTH_DIR / "refresh_token.json"
 PROCESSED_TRACKS_PATH = DATA_DIR / "processed_tracks.csv"
 PROCESSED_ARTISTS_PATH = DATA_DIR / "processed_artists.csv"

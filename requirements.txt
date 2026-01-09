@@ -7,3 +7,4 @@ scikit-learn
 plotly
 flask-cors
 python-dotenv
+sqlalchemy

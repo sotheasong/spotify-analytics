@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-from backend.app import (
+from ..backend.app import (
     collect_user_datasets,
     load_persisted_refresh_token,
     persist_snapshot,
