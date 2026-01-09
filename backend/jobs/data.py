@@ -9,6 +9,26 @@ import os
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASE_DIR = PROJECT_ROOT / "data" / "history"
 
+from sqlalchemy import text
+
+def insert_dataframe(df, table, constraint):
+    if df.empty:
+        return
+
+    cols = list(df.columns)
+    col_names = ", ".join(cols)
+    values = ", ".join([f":{c}" for c in cols])
+
+    sql = text(f"""
+        INSERT INTO {table} ({col_names})
+        VALUES ({values})
+        ON CONFLICT ON CONSTRAINT {constraint} DO NOTHING
+    """)
+
+    with engine.begin() as conn:
+        conn.execute(sql, df.to_dict(orient="records"))
+
+
 # Database connection
 load_dotenv()
 
@@ -18,6 +38,7 @@ engine = create_engine(f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASS
 DATASETS = {
     "recent_tracks_audio_features.csv": {
         "table": "recent_tracks_audio_features",
+	"constraint": "recent_tracks_audio_features_pk",
         "columns": [
             "id", "name", "acousticness", "danceability", "energy",
             "instrumentalness", "key", "liveness", "mode", "speechiness",
@@ -26,21 +47,25 @@ DATASETS = {
     },
     "recent_tracks.csv": {
         "table": "recent_tracks",
+	"constraint": "recent_tracks_pk",
         "columns": ["track_id", "track_name", "album_name", "played_at", "artist_name"]
     },
     "top_artists.csv": {
         "table": "top_artists",
-        "columns": ["Unnamed: 0", "id", "name", "popularity", "genres", "follower_count"]
+	"constraint": "top_artists_pk",
+        "columns": ["index", "id", "name", "popularity", "genres", "follower_count"]
     },
     "top_tracks_audio_features.csv": {
         "table": "top_tracks_audio_features",
-        "columns": ["Unnamed: 0", "id", "name", "acousticness", "danceability", "energy",
+	"constraint": "top_tracks_audio_features_pk",
+        "columns": ["index", "id", "name", "acousticness", "danceability", "energy",
                     "instrumentalness", "key", "liveness", "mode", "speechiness",
                     "valence", "temp"]
     },
     "top_tracks.csv": {
         "table": "top_tracks",
-        "columns": ["Unnamed: 0", "id", "track_name", "artist_name", "album_name",
+	"constraint": "top_tracks_pk",
+        "columns": ["index", "id", "track_name", "artist_name", "album_name",
                     "release_date", "duration_min", "popularity", "explicit"]
     }
 }
@@ -50,7 +75,7 @@ for snapshot_dir in sorted(BASE_DIR.iterdir(), key=lambda x: x.stat().st_mtime):
     if not snapshot_dir.is_dir():
         continue
 
-    # Recursively find all CSVs in this snapshot folder
+    # Recursively find all CSVs in this snapshot folder   
     csv_files = list(snapshot_dir.rglob("*.csv"))
     if not csv_files:
         print(f"Skipping {snapshot_dir.name}: no CSV files found")
@@ -72,9 +97,12 @@ for snapshot_dir in sorted(BASE_DIR.iterdir(), key=lambda x: x.stat().st_mtime):
 
         table_name = DATASETS[file_name]["table"]
         columns = DATASETS[file_name]["columns"]
+        config = DATASETS[file_name]
 
         # Read CSV
         df = pd.read_csv(file_path)
+        if "Unnamed: 0" in df.columns:
+            df = df.rename(columns={"Unnamed: 0": "index"})
 
         # Keep only expected columns, including Unnamed: 0
         df = df[[col for col in columns if col in df.columns]]
@@ -83,12 +111,9 @@ for snapshot_dir in sorted(BASE_DIR.iterdir(), key=lambda x: x.stat().st_mtime):
         df["collection_date"] = collection_date
 
         # Insert into SQL
-        df.to_sql(
-            table_name,
-            engine,
-            if_exists="append",
-            index=False,
-            method="multi"
-        )
+        # df.to_sql(table_name, engine, if_exists="append", index=False, method="multi")
+        insert_dataframe(df,table=config["table"],constraint=config["constraint"])
 
-        print(f"  Loaded {file_name} → {table_name}")
+        # print(f"  Loaded {file_name} → {table_name}")
+
+
