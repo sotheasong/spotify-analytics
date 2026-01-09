@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS recent_tracks_audio_features (
     speechiness DOUBLE PRECISION,
     valence DOUBLE PRECISION,
     tempo DOUBLE PRECISION,
-    collection_date DATE NOT NULL
+    collection_date DATE NOT NULL,
+    PRIMARY KEY (id, collection_date)
 );
 
 CREATE TABLE IF NOT EXISTS recent_tracks (
@@ -20,7 +21,8 @@ CREATE TABLE IF NOT EXISTS recent_tracks (
     album_name TEXT,
     played_at DATE,
     artist_name TEXT,
-    collection_date DATE NOT NULL
+    collection_date DATE NOT NULL,
+    PRIMARY KEY (track_id, collection_date)
 );
 
 -- top_artists
@@ -31,7 +33,8 @@ CREATE TABLE IF NOT EXISTS top_artists (
     popularity INT,
     genres TEXT,
     follower_count INT,
-    collection_date DATE
+    collection_date DATE,
+    PRIMARY KEY (id, collection_date)
 );
 
 -- top_tracks
@@ -45,7 +48,8 @@ CREATE TABLE IF NOT EXISTS top_tracks (
     duration_min DOUBLE PRECISION,
     popularity INT,
     explicit BOOLEAN,
-    collection_date DATE
+    collection_date DATE,
+    PRIMARY KEY (id, collection_date) 
 );
 
 -- top_tracks_audio_features
@@ -63,5 +67,6 @@ CREATE TABLE IF NOT EXISTS top_tracks_audio_features (
     speechiness DOUBLE PRECISION,
     valence DOUBLE PRECISION,
     temp DOUBLE PRECISION,
-    collection_date DATE
+    collection_date DATE,
+    PRIMARY KEY (id, collection_date)
 );
