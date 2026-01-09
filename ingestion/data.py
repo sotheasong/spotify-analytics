@@ -107,12 +107,14 @@ for snapshot_dir in sorted(BASE_DIR.iterdir(), key=lambda x: x.stat().st_mtime):
         # Keep only expected columns, including Unnamed: 0
         df = df[[col for col in columns if col in df.columns]]
 
-        # Add collection_date
+        if "played_at" in df.columns:
+          df["played_at"] = pd.to_datetime(df["played_at"], errors="coerce").dt.date
+
         df["collection_date"] = collection_date
 
-        # Insert into SQL
-        # df.to_sql(table_name, engine, if_exists="append", index=False, method="multi")
-        insert_dataframe(df,table=config["table"],constraint=config["constraint"])
+        df = df.where(pd.notnull(df), None)
+
+        insert_dataframe(df, table=config["table"], constraint=config["constraint"])
 
         # print(f"  Loaded {file_name} → {table_name}")
 
