@@ -22,7 +22,8 @@ def insert_dataframe(df, table, constraint):
     sql = text(f"""
         INSERT INTO {table} ({col_names})
         VALUES ({values})
-        ON CONFLICT ON CONSTRAINT {constraint} DO NOTHING
+        ON CONFLICT ON CONSTRAINT {constraint}
+        DO UPDATE SET tempo = COALESCE({table}.tempo, EXCLUDED.tempo)
     """)
 
     with engine.begin() as conn:
@@ -42,7 +43,7 @@ DATASETS = {
         "columns": [
             "id", "name", "acousticness", "danceability", "energy",
             "instrumentalness", "key", "liveness", "mode", "speechiness",
-            "valence", "temp"
+            "valence", "tempo"
         ]
     },
     "recent_tracks.csv": {
@@ -60,7 +61,7 @@ DATASETS = {
 	"constraint": "top_tracks_audio_features_pk",
         "columns": ["index", "id", "name", "acousticness", "danceability", "energy",
                     "instrumentalness", "key", "liveness", "mode", "speechiness",
-                    "valence", "temp"]
+                    "valence", "tempo"]
     },
     "top_tracks.csv": {
         "table": "top_tracks",

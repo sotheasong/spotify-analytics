@@ -8,3 +8,5 @@ plotly
 flask-cors
 python-dotenv
 sqlalchemy
+duckdb
+scikit-learn
