@@ -22,13 +22,11 @@ def insert_dataframe(df, table, constraint):
     sql = text(f"""
         INSERT INTO {table} ({col_names})
         VALUES ({values})
-        ON CONFLICT ON CONSTRAINT {constraint}
-        DO UPDATE SET tempo = COALESCE({table}.tempo, EXCLUDED.tempo)
+        ON CONFLICT ON CONSTRAINT {constraint} DO NOTHING
     """)
 
     with engine.begin() as conn:
         conn.execute(sql, df.to_dict(orient="records"))
-
 
 # Database connection
 load_dotenv()
@@ -37,12 +35,12 @@ engine = create_engine(f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASS
 
 # Map CSV filenames to table names and columns
 DATASETS = {
-    "recent_tracks_audio_features.csv": {
+    "top_tracks_audio_features.csv": {
         "table": "recent_tracks_audio_features",
 	"constraint": "recent_tracks_audio_features_pk",
         "columns": [
             "id", "name", "acousticness", "danceability", "energy",
-            "instrumentalness", "key", "liveness", "mode", "speechiness",
+            "instrumentalness", "key", "liveness", "loudness", "mode", "speechiness",
             "valence", "tempo"
         ]
     },
@@ -56,11 +54,11 @@ DATASETS = {
 	"constraint": "top_artists_pk",
         "columns": ["index", "id", "name", "popularity", "genres", "follower_count"]
     },
-    "top_tracks_audio_features.csv": {
+    "recent_tracks_audio_features.csv": {
         "table": "top_tracks_audio_features",
 	"constraint": "top_tracks_audio_features_pk",
         "columns": ["index", "id", "name", "acousticness", "danceability", "energy",
-                    "instrumentalness", "key", "liveness", "mode", "speechiness",
+                    "instrumentalness", "key", "liveness", "loudness", "mode", "speechiness",
                     "valence", "tempo"]
     },
     "top_tracks.csv": {
@@ -101,22 +99,35 @@ for snapshot_dir in sorted(BASE_DIR.iterdir(), key=lambda x: x.stat().st_mtime):
         config = DATASETS[file_name]
 
         # Read CSV
+        # Read CSV
         df = pd.read_csv(file_path)
+
         if "Unnamed: 0" in df.columns:
             df = df.rename(columns={"Unnamed: 0": "index"})
 
-        # Keep only expected columns, including Unnamed: 0
         df = df[[col for col in columns if col in df.columns]]
 
         if "played_at" in df.columns:
-          df["played_at"] = pd.to_datetime(df["played_at"], errors="coerce").dt.date
+            df["played_at"] = pd.to_datetime(df["played_at"], errors="coerce").dt.date
 
         df["collection_date"] = collection_date
+
+
+        if file_name == "recent_tracks_audio_features.csv":
+            recent_tracks_df = pd.read_sql(
+                text("""
+                SELECT track_id
+                FROM recent_tracks
+                WHERE collection_date = :date"""),
+                engine,
+                params={"date": collection_date}
+            )
+            recent_ids = set(recent_tracks_df["track_id"])
+            df = df[df["id"].isin(recent_ids)]
+
+        if "id" in df.columns:
+            df = df.drop_duplicates(subset=["id", "collection_date"])
 
         df = df.where(pd.notnull(df), None)
 
         insert_dataframe(df, table=config["table"], constraint=config["constraint"])
-
-        # print(f"  Loaded {file_name} → {table_name}")
-
-
