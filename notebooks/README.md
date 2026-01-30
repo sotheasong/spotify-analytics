@@ -43,3 +43,6 @@ What patterns consistently explain why this user listens to what they listen to?
 - Genre
 - Artists
 
+# Database
+
+- Discogs
