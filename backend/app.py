@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,13 +13,26 @@ from flask import Flask, jsonify, redirect, request, session
 from flask_cors import CORS
 from concurrent.futures import ThreadPoolExecutor
 
+APP_DIR = Path(__file__).resolve().parent
+REPO_ROOT = APP_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+  sys.path.append(str(REPO_ROOT))
 
-from ..ingestion.cleaning import (
+
+try:
+  from ingestion.cleaning import (
     clean_recents,
     clean_top_artists,
     clean_top_tracks,
-    clean_audio_features
-)
+    clean_audio_features,
+  )
+except ImportError:
+  from ..ingestion.cleaning import (
+    clean_recents,
+    clean_top_artists,
+    clean_top_tracks,
+    clean_audio_features,
+  )
 
 load_dotenv()
 
@@ -30,15 +44,14 @@ client_secret = os.getenv("CLIENT_SECRET")
 
 REDIRECT_URI = "http://127.0.0.1:5000/callback"
 
-FRONTEND_URI = "http://localhost:5173"
+# Keep frontend/backend on 127.0.0.1 to avoid session-cookie host mismatch.
+FRONTEND_URI = "http://127.0.0.1:5173"
 
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE_URL = "https://api.spotify.com/v1/"
 
 
-APP_DIR = Path(__file__).resolve().parent
-REPO_ROOT = APP_DIR.parent
 DATA_DIR = REPO_ROOT / "data"
 HISTORY_DIR = DATA_DIR / "history"
 AUTH_DIR = REPO_ROOT / "auth"
@@ -48,6 +61,9 @@ PROCESSED_ARTISTS_PATH = DATA_DIR / "processed_artists.csv"
 PROCESSED_RECENT_PATH = DATA_DIR / "processed_recent.csv"
 PROCESSED_TOP_AUDIO_FEATURES_PATH = DATA_DIR / "processed_top_track_audio_features.csv"
 PROCESSED_RECENT_AUDIO_FEATURES_PATH = DATA_DIR / "processed_recent_track_audio_features.csv"
+
+from models.feature_engineering import FeatureEngineeringConfig
+from models.recommenders.cosine import CosineRecommenderConfig, run_cosine_recommender
 
 
 def ensure_directories() -> None:
@@ -99,6 +115,88 @@ def refresh_access_token(refresh_token_value: str) -> dict:
     store_refresh_token(new_refresh_token)
 
   return token_info
+
+
+def get_valid_access_token() -> Optional[str]:
+  """Return a valid access token from session, refreshing if expired."""
+  access_token = session.get("access_token")
+  refresh_token_value = session.get("refresh_token")
+  expires_at = session.get("expires_at", 0)
+
+  if not access_token:
+    return None
+
+  if datetime.now().timestamp() > expires_at:
+    if not refresh_token_value:
+      return None
+    token_info = refresh_access_token(refresh_token_value)
+    session["access_token"] = token_info["access_token"]
+    session["expires_at"] = datetime.now().timestamp() + token_info["expires_in"]
+    session["refresh_token"] = token_info.get("refresh_token", refresh_token_value)
+    access_token = session["access_token"]
+
+  return access_token
+
+
+def spotify_request(
+  method: str,
+  endpoint: str,
+  access_token: str,
+  *,
+  json_body: Optional[dict] = None,
+  params: Optional[dict] = None
+) -> dict:
+  """Call Spotify Web API and return parsed JSON or raise HTTP error."""
+  headers = {"Authorization": f"Bearer {access_token}"}
+  if json_body is not None:
+    headers["Content-Type"] = "application/json"
+
+  response = requests.request(
+    method=method,
+    url=f"{API_BASE_URL}{endpoint}",
+    headers=headers,
+    json=json_body,
+    params=params,
+  )
+  response.raise_for_status()
+  if not response.text:
+    return {}
+  return response.json()
+
+
+def get_current_user_profile(access_token: str) -> dict:
+  """Fetch current Spotify user profile."""
+  return spotify_request("GET", "me", access_token)
+
+
+def create_spotify_playlist(
+  access_token: str,
+  user_id: str,
+  name: str,
+  description: str,
+  public: bool = False
+) -> dict:
+  """Create a Spotify playlist under a user account."""
+  payload = {
+    "name": name,
+    "description": description,
+    "public": public,
+  }
+  return spotify_request("POST", f"users/{user_id}/playlists", access_token, json_body=payload)
+
+
+def add_tracks_to_playlist(access_token: str, playlist_id: str, track_uris: list[str]) -> None:
+  """Add tracks to a playlist in batches of 100."""
+  if not track_uris:
+    return
+  for i in range(0, len(track_uris), 100):
+    chunk = track_uris[i:i + 100]
+    spotify_request(
+      "POST",
+      f"playlists/{playlist_id}/tracks",
+      access_token,
+      json_body={"uris": chunk},
+    )
 
 
 def collect_user_datasets(access_token: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -243,7 +341,11 @@ def index():
 
 @app.route("/login")
 def login():
-  scope = "user-read-private user-read-email user-read-playback-position user-top-read user-read-recently-played"
+  scope = (
+    "user-read-private user-read-email user-read-playback-position "
+    "user-top-read user-read-recently-played "
+    "playlist-modify-private playlist-modify-public"
+  )
   params = {
       "response_type": "code",
       "redirect_uri": REDIRECT_URI,
@@ -280,40 +382,110 @@ def callback():
   session['expires_at'] = datetime.now().timestamp() + token_info['expires_in']
   store_refresh_token(token_info.get('refresh_token'))
 
-  return redirect("/get-info")
+  return redirect(f"{FRONTEND_URI}/analytics")
 
 
 @app.route("/get-info")
 def get_info():
-    access_token = session.get('access_token')
-    if not access_token:
-        return redirect("/login")
+  access_token = get_valid_access_token()
+  if not access_token:
+    return jsonify({"error": "Not authenticated. Please connect Spotify first."}), 401
 
-    if datetime.now().timestamp() > session.get('expires_at', 0):
-        return redirect("/refresh_token")
+  df_tracks, df_artists, df_recent, df_audio_top, df_audio_recent = collect_user_datasets(access_token)
+  # persist_snapshot(df_tracks, df_artists, df_recent, df_audio_recent, df_audio_top)
+  return jsonify({"status": "data fetched and cleaned"})
 
-    df_tracks, df_artists, df_recent, df_audio_top, df_audio_recent = collect_user_datasets(access_token)
-    persist_snapshot(df_tracks, df_artists, df_recent, df_audio_recent, df_audio_top)
 
-    return jsonify({"status": "data fetched and cleaned"})
+@app.route("/api/recommendations/create-playlist", methods=["POST"])
+def create_recommendations_playlist():
+  access_token = get_valid_access_token()
+  if not access_token:
+    return jsonify({"error": "Not authenticated. Please connect Spotify first."}), 401
+
+  payload = request.get_json(silent=True) or {}
+  top_k = int(payload.get("top_k", 50))
+  dedupe_mode = payload.get("dedupe_mode", "track_name_artists")
+  recency_halflife_days = float(payload.get("recency_halflife_days", 14.0))
+
+  try:
+    fe_config = FeatureEngineeringConfig(
+      user_history_csv=str(DATA_DIR / "raw/df_all.csv"),
+      catalog_csv=str(DATA_DIR / "raw/spotify-tracks.csv"),
+      exclude_seen_tracks=True,
+      recency_halflife_days=recency_halflife_days,
+    )
+    model_config = CosineRecommenderConfig(top_k=top_k, dedupe_mode=dedupe_mode)
+    recommendations_df, _ = run_cosine_recommender(
+      fe_config=fe_config,
+      model_config=model_config,
+    )
+  except Exception as exc:
+    return jsonify({"error": f"Failed to generate recommendations: {exc}"}), 500
+
+  if recommendations_df.empty:
+    return jsonify({"error": "No recommendations generated."}), 404
+
+  id_candidates = recommendations_df.get("track_id")
+  if id_candidates is None:
+    id_candidates = recommendations_df.get("id")
+  if id_candidates is None:
+    return jsonify({"error": "Recommender output does not include track IDs."}), 500
+
+  track_uris: list[str] = []
+  for raw_id in id_candidates.astype(str).tolist():
+    track_id = raw_id.strip()
+    if not track_id or track_id.lower() == "nan":
+      continue
+    track_uris.append(f"spotify:track:{track_id}")
+
+  track_uris = list(dict.fromkeys(track_uris))
+  if not track_uris:
+    return jsonify({"error": "No valid track URIs found for playlist creation."}), 404
+
+  try:
+    me = get_current_user_profile(access_token)
+    created = create_spotify_playlist(
+      access_token=access_token,
+      user_id=me["id"],
+      name=f"Spotify Analytics Recs {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+      description="Auto-generated recommendations from cosine similarity model.",
+      public=False,
+    )
+    add_tracks_to_playlist(access_token, created["id"], track_uris)
+  except requests.HTTPError as exc:
+    status_code = exc.response.status_code if exc.response is not None else 502
+    message = "Spotify API request failed."
+    if status_code == 403:
+      message = "Spotify rejected playlist operation (likely missing playlist scopes). Re-login and try again."
+    return jsonify({"error": message, "details": str(exc)}), status_code
+  except Exception as exc:
+    return jsonify({"error": "Failed to create playlist.", "details": str(exc)}), 500
+
+  return jsonify({
+    "playlist_id": created.get("id"),
+    "playlist_url": created.get("external_urls", {}).get("spotify"),
+    "playlist_uri": created.get("uri"),
+    "tracks_added": len(track_uris),
+  })
 
 
 
 @app.route("/refresh_token")
 def refresh_token():
-  refresh_token = session.get('refresh_token')
-  if not refresh_token:
+  refresh_token_value = session.get("refresh_token")
+  if not refresh_token_value:
     return redirect("/login")
 
-  if datetime.now().timestamp() > session['expires_at']:
-    token_info = refresh_access_token(refresh_token)
-    session['access_token'] = token_info['access_token']
-    session['expires_at'] = datetime.now().timestamp() + token_info['expires_in']
-    session['refresh_token'] = token_info.get('refresh_token', refresh_token)
+  if datetime.now().timestamp() > session.get("expires_at", 0):
+    token_info = refresh_access_token(refresh_token_value)
+    session["access_token"] = token_info["access_token"]
+    session["expires_at"] = datetime.now().timestamp() + token_info["expires_in"]
+    session["refresh_token"] = token_info.get("refresh_token", refresh_token_value)
 
-    return redirect("/get-info")
-  
-CORS(app)
+  return redirect("/get-info")
+
+
+CORS(app, supports_credentials=True, origins=[FRONTEND_URI, "http://127.0.0.1:5173"])
 
 if __name__ == "__main__":
   app.run(host="0.0.0.0", debug=True)

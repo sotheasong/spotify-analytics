@@ -71,6 +71,19 @@ Optional flags:
 - `--include-feature-distance` include L2 distance in output
 - `--keep-seen` keep already-listened tracks in candidate pool
 
+## Setup
+
+- Create `.env` file with the following
+```bash
+DB_USER = 
+DB_PASS = 
+DB_HOST = 
+DB_NAME = 
+
+CLIENT_ID = 
+CLIENT_SECRET = 
+```
+
 ## Backend setup (Flask)
 
 ```bash
