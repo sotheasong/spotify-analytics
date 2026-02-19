@@ -1,25 +1,103 @@
 # spotify-analytics
 
-# frontend
+Personal Spotify analytics + recommendation project.
 
+## Current status
+
+Implemented so far:
+
+- Ingestion and historical tracking into PostgreSQL (`recent_tracks`, `recent_tracks_audio_features`, etc.)
+- EDA notebooks:
+  - `notebooks/EDA.ipynb` (user listening history)
+  - `notebooks/data_EDA.ipynb` (catalog dataset)
+- Feature engineering pipeline:
+  - `models/feature_engineering.py`
+- First recommender model (baseline):
+  - `models/recommenders/cosine.py`
+- Simple training/runner CLI:
+  - `models/train.py`
+
+## Recommender pipeline (implemented)
+
+### 1) Feature engineering (`models/feature_engineering.py`)
+
+The pipeline currently:
+
+- Loads user history from `data/raw/df_all.csv`
+- Loads catalog from `data/raw/spotify-tracks.csv`
+- Resolves shared numeric feature columns
+- Cleans/coerces numeric audio features
+- Handles missing values (drop or median fill)
+- Deduplicates tracks
+- Excludes already-listened tracks (configurable)
+- Standardizes features with `StandardScaler`
+- Computes recency weights from `collection_date`
+- Builds a user preference vector (weighted profile)
+
+### 2) Model 1: Cosine similarity baseline (`models/recommenders/cosine.py`)
+
+- Scores each catalog track against the user profile with cosine similarity
+- Ranks tracks by score descending
+- Returns top-k recommendations with metadata (`track_name`, `artists`, `album_name`, etc.)
+
+### 3) CLI runner (`models/train.py`)
+
+- Runs feature engineering + cosine model end-to-end
+- Writes recommendations to CSV
+
+Default output:
+
+- `data/processed/recommendations_cosine.csv`
+
+## How to run the recommender
+
+From repo root:
+
+```bash
+python models/train.py
+```
+
+Example with options:
+
+```bash
+python models/train.py \
+  --top-k 100 \
+  --output data/processed/recommendations_cosine.csv \
+  --recency-halflife-days 14
+```
+
+Optional flags:
+
+- `--include-feature-distance` include L2 distance in output
+- `--keep-seen` keep already-listened tracks in candidate pool
+
+## Backend setup (Flask)
+
+```bash
 cd backend
-
 python3 -m venv venv
-
-source venv/bin/activate # or .\venv\Scripts\activate for Windows
-
+source venv/bin/activate  # Windows: .\\venv\\Scripts\\activate
 pip install -r ../requirements.txt
-
 flask run
+```
 
-or python -m backend.app
-or python -m backend.jobs.daily_snapshot
+Alternative:
 
-# backend
+```bash
+python -m backend.app
+python -m backend.jobs.daily_snapshot
+```
 
-npm create vite@latest frontend -- --template react
+## Frontend setup (Vite + React)
+
+```bash
+cd frontend
 npm install
+npm run dev
+```
 
-cd C:\Users\songs\Desktop\111\Misc code\spotify-analytics && python backend/jobs/daily_snapshot.py >> data/history/snapshot.log 2>&1
+## Next planned steps
 
-<hr>
+- Add model comparison (weighted centroid + KNN baseline)
+- Add offline evaluation script (Hit@K / Recall@K with temporal split)
+- Build playlist blending logic (new recommendations + familiar tracks)

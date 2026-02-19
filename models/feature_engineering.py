@@ -215,10 +215,15 @@ def run_feature_engineering(
         catalog_df=catalog_clean,
         feature_cols=feature_cols,
     )
-    
-    if weights:
-        for i, col in enumerate(feature_cols):
-            catalog_scaled[:, i] *= weights[col]
+
+    # Optional feature weighting (applied consistently to user and catalog vectors).
+    if cfg.feature_weights:
+        feature_weight_vector = np.array(
+            [float(cfg.feature_weights.get(col, 1.0)) for col in feature_cols],
+            dtype=float,
+        )
+        user_scaled = user_scaled * feature_weight_vector
+        catalog_scaled = catalog_scaled * feature_weight_vector
     
     recency_weights = compute_recency_weights(
         user_df=user_clean,
