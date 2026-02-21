@@ -64,6 +64,7 @@ PROCESSED_RECENT_AUDIO_FEATURES_PATH = DATA_DIR / "processed_recent_track_audio_
 
 from models.feature_engineering import FeatureEngineeringConfig
 from models.recommenders.cosine import CosineRecommenderConfig, run_cosine_recommender
+from models.recommenders.knn import KNNRecommenderConfig, run_knn_recommender
 
 
 def ensure_directories() -> None:
@@ -403,6 +404,7 @@ def create_recommendations_playlist():
     return jsonify({"error": "Not authenticated. Please connect Spotify first."}), 401
 
   payload = request.get_json(silent=True) or {}
+  model = str(payload.get("model", "cosine")).strip().lower()
   top_k = int(payload.get("top_k", 50))
   dedupe_mode = payload.get("dedupe_mode", "track_name_artists")
   recency_halflife_days = float(payload.get("recency_halflife_days", 14.0))
@@ -414,11 +416,27 @@ def create_recommendations_playlist():
       exclude_seen_tracks=True,
       recency_halflife_days=recency_halflife_days,
     )
-    model_config = CosineRecommenderConfig(top_k=top_k, dedupe_mode=dedupe_mode)
-    recommendations_df, _ = run_cosine_recommender(
-      fe_config=fe_config,
-      model_config=model_config,
-    )
+    if model == "knn":
+      per_track_k = int(payload.get("per_track_k", 50))
+      max_user_tracks_raw = int(payload.get("max_user_tracks", 0))
+      min_similarity = float(payload.get("min_similarity", 0.0))
+      knn_config = KNNRecommenderConfig(
+        top_k=top_k,
+        per_track_k=per_track_k,
+        max_user_tracks=None if max_user_tracks_raw <= 0 else max_user_tracks_raw,
+        dedupe_mode=dedupe_mode,
+        min_similarity=min_similarity,
+      )
+      recommendations_df, _ = run_knn_recommender(
+        fe_config=fe_config,
+        model_config=knn_config,
+      )
+    else:
+      cosine_config = CosineRecommenderConfig(top_k=top_k, dedupe_mode=dedupe_mode)
+      recommendations_df, _ = run_cosine_recommender(
+        fe_config=fe_config,
+        model_config=cosine_config,
+      )
   except Exception as exc:
     return jsonify({"error": f"Failed to generate recommendations: {exc}"}), 500
 

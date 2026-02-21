@@ -6,9 +6,13 @@ export default function Analytics() {
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
   const [playlistError, setPlaylistError] = useState('');
   const [playlistResult, setPlaylistResult] = useState(null);
+  const [model, setModel] = useState('cosine');
   const [topK, setTopK] = useState(50);
   const [dedupeMode, setDedupeMode] = useState('track_name');
   const [recencyHalflifeDays, setRecencyHalflifeDays] = useState(14);
+  const [perTrackK, setPerTrackK] = useState(40);
+  const [maxUserTracks, setMaxUserTracks] = useState(0);
+  const [minSimilarity, setMinSimilarity] = useState(0.0);
 
   useEffect(() => {
     fetch('http://127.0.0.1:5000/get-info', { credentials: 'include' })
@@ -28,15 +32,24 @@ export default function Analytics() {
     setPlaylistError('');
     setPlaylistResult(null);
     try {
+      const requestBody = {
+        model,
+        top_k: Number(topK),
+        recency_halflife_days: Number(recencyHalflifeDays),
+        dedupe_mode: dedupeMode,
+      };
+
+      if (model === 'knn') {
+        requestBody.per_track_k = Number(perTrackK);
+        requestBody.max_user_tracks = Number(maxUserTracks);
+        requestBody.min_similarity = Number(minSimilarity);
+      }
+
       const response = await fetch('http://127.0.0.1:5000/api/recommendations/create-playlist', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          top_k: Number(topK),
-          recency_halflife_days: Number(recencyHalflifeDays),
-          dedupe_mode: dedupeMode,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const payload = await response.json();
@@ -79,6 +92,17 @@ export default function Analytics() {
 
       <div className="row g-3 align-items-end mb-3">
         <div className="col-md-3">
+          <label className="form-label">Model</label>
+          <select
+            className="form-select"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            <option value="cosine">Cosine (profile baseline)</option>
+            <option value="knn">KNN (item-to-item)</option>
+          </select>
+        </div>
+        <div className="col-md-3">
           <label className="form-label">Top K</label>
           <input
             type="number"
@@ -112,6 +136,44 @@ export default function Analytics() {
             <option value="track_id">Track ID</option>
           </select>
         </div>
+        {model === 'knn' && (
+          <>
+            <div className="col-md-3">
+              <label className="form-label">Per-track K</label>
+              <input
+                type="number"
+                className="form-control"
+                min="1"
+                max="200"
+                value={perTrackK}
+                onChange={(e) => setPerTrackK(e.target.value)}
+              />
+            </div>
+            <div className="col-md-3">
+              <label className="form-label">Max user tracks (0 = all)</label>
+              <input
+                type="number"
+                className="form-control"
+                min="0"
+                max="5000"
+                value={maxUserTracks}
+                onChange={(e) => setMaxUserTracks(e.target.value)}
+              />
+            </div>
+            <div className="col-md-3">
+              <label className="form-label">Min similarity</label>
+              <input
+                type="number"
+                className="form-control"
+                min="0"
+                max="1"
+                step="0.01"
+                value={minSimilarity}
+                onChange={(e) => setMinSimilarity(e.target.value)}
+              />
+            </div>
+          </>
+        )}
         <div className="col-md-5">
           <button
             className="btn btn-success w-100"
