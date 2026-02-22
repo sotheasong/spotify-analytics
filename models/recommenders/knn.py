@@ -8,6 +8,11 @@ import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 
 from models.feature_engineering import FeatureEngineeringConfig, run_feature_engineering
+from models.recommenders.genre_similarity import (
+    blended_rank_score,
+    build_genre_similarity_artifacts,
+    cosine_similarity_to_profile,
+)
 
 
 @dataclass(slots=True)
@@ -27,6 +32,8 @@ class KNNRecommenderConfig:
     min_similarity: float = 0.0
     # Add some debugging columns.
     include_debug: bool = False
+    # Blend in genre similarity (0 = disabled, 1 = only genre).
+    genre_weight: float = 0.0
 
 
 def _normalize_text(value: Any) -> str:
@@ -126,7 +133,24 @@ def recommend_from_artifacts(
     if not np.any(scores):
         return pd.DataFrame(columns=[catalog_id_col, "score", "rank"])
 
-    sorted_idx = np.argsort(scores)[::-1]
+    # Optional genre similarity (rank-normalized blend).
+    genre_scores: np.ndarray | None = None
+    final_scores = scores
+    if cfg.genre_weight and float(cfg.genre_weight) > 0.0:
+        genre_art = build_genre_similarity_artifacts(
+            user_df=user_df,
+            catalog_df=catalog_df,
+            recency_weights=recency_weights,
+        )
+        if genre_art is not None:
+            genre_scores = cosine_similarity_to_profile(genre_art.catalog_matrix, genre_art.user_profile)
+            final_scores = blended_rank_score(
+                base_scores=scores,
+                genre_scores=genre_scores,
+                genre_weight=cfg.genre_weight,
+            )
+
+    sorted_idx = np.argsort(final_scores)[::-1]
 
     selected: list[int] = []
     if cfg.deduplicate_tracks:
@@ -160,7 +184,10 @@ def recommend_from_artifacts(
     keep_cols = [c for c in preferred_cols if c in catalog_df.columns]
 
     result = catalog_df.iloc[top_idx][keep_cols].copy()
-    result["score"] = scores[top_idx]
+    result["score"] = final_scores[top_idx]
+    result["knn_score"] = scores[top_idx]
+    if genre_scores is not None:
+        result["genre_score"] = genre_scores[top_idx]
     result["rank"] = np.arange(1, len(result) + 1, dtype=int)
 
     if cfg.include_debug:

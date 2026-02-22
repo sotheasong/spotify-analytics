@@ -20,7 +20,13 @@ def clean_top_artists(artists_json):
   df = df.rename(columns={'followers.total': 'follower_count'})
   return df
 
-def clean_recents(recent_json):
+def clean_recents(recent_json, *, return_artist_links: bool = False):
+  """
+  Clean the Spotify 'recently played' payload.
+
+  When return_artist_links=True, also return a second dataframe with one row per
+  (track_id, artist_id) to support fetching artist genres later.
+  """
   df = pd.json_normalize(recent_json)
   keep_cols = [
       'track.id',
@@ -30,9 +36,33 @@ def clean_recents(recent_json):
       'played_at'
   ]
   df = df[keep_cols]
+
   df['artist_name'] = df['track.artists'].apply(
-      lambda x: x[0]['name'] if isinstance(x, list) and len(x) > 0 else None
+      lambda x: x[0].get('name') if isinstance(x, list) and len(x) > 0 and isinstance(x[0], dict) else None
   )
+
+  artist_links = None
+  if return_artist_links:
+    rows = []
+    for _, row in df.iterrows():
+      track_id = row.get('track.id')
+      artists = row.get('track.artists')
+      if not track_id or not isinstance(artists, list):
+        continue
+      for a in artists:
+        if not isinstance(a, dict):
+          continue
+        aid = a.get('id')
+        aname = a.get('name')
+        if aid:
+          rows.append({
+            "track_id": track_id,
+            "artist_id": aid,
+            "artist_name": aname,
+          })
+    artist_links = pd.DataFrame(rows).drop_duplicates()
+
+  # Drop the nested artist column now that we’ve extracted what we need.
   df = df.drop(columns=['track.artists'])
   df['played_at'] = pd.to_datetime(df['played_at'], errors='coerce')
   df = df.rename(columns={
@@ -41,6 +71,9 @@ def clean_recents(recent_json):
       'track.album.name': 'album_name',
       'played_at': 'played_at'
   })
+
+  if return_artist_links:
+    return df, artist_links
   return df
 
 def clean_top_tracks(tracks_json):

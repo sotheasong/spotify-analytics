@@ -7,6 +7,11 @@ import numpy as np
 import pandas as pd
 
 from models.feature_engineering import FeatureEngineeringConfig, run_feature_engineering
+from models.recommenders.genre_similarity import (
+    blended_rank_score,
+    build_genre_similarity_artifacts,
+    cosine_similarity_to_profile,
+)
 
 
 @dataclass(slots=True)
@@ -16,6 +21,8 @@ class CosineRecommenderConfig:
     deduplicate_tracks: bool = True
     # Options: "track_name_artists", "track_name", "track_id"
     dedupe_mode: str = "track_name_artists"
+    # Blend in genre similarity (0 = disabled, 1 = only genre).
+    genre_weight: float = 0.0
 
 
 def cosine_similarity_scores(user_profile: np.ndarray, catalog_matrix: np.ndarray) -> np.ndarray:
@@ -76,17 +83,37 @@ def recommend_from_artifacts(
     if cfg.dedupe_mode not in {"track_name_artists", "track_name", "track_id"}:
         raise ValueError("dedupe_mode must be one of: track_name_artists, track_name, track_id")
 
+    user_df: pd.DataFrame = artifacts["user_df"]
     catalog_df: pd.DataFrame = artifacts["catalog_df"]
     catalog_id_col: str = artifacts["catalog_id_column"]
     catalog_scaled: np.ndarray = artifacts["catalog_scaled"]
     user_profile: np.ndarray = artifacts["user_profile"]
 
-    scores = cosine_similarity_scores(user_profile=user_profile, catalog_matrix=catalog_scaled)
-    top_k = min(cfg.top_k, len(scores))
+    audio_scores = cosine_similarity_scores(user_profile=user_profile, catalog_matrix=catalog_scaled)
+
+    # Optional genre similarity (rank-normalized blend).
+    genre_scores: np.ndarray | None = None
+    final_scores = audio_scores
+    if cfg.genre_weight and float(cfg.genre_weight) > 0.0:
+        recency = artifacts.get("recency_weights", None)
+        genre_art = build_genre_similarity_artifacts(
+            user_df=user_df,
+            catalog_df=catalog_df,
+            recency_weights=recency,
+        )
+        if genre_art is not None:
+            genre_scores = cosine_similarity_to_profile(genre_art.catalog_matrix, genre_art.user_profile)
+            final_scores = blended_rank_score(
+                base_scores=audio_scores,
+                genre_scores=genre_scores,
+                genre_weight=cfg.genre_weight,
+            )
+
+    top_k = min(cfg.top_k, len(final_scores))
     if top_k == 0:
         return pd.DataFrame(columns=[catalog_id_col, "score", "rank"])
 
-    sorted_idx = np.argsort(scores)[::-1]
+    sorted_idx = np.argsort(final_scores)[::-1]
 
     if cfg.deduplicate_tracks:
         selected: list[int] = []
@@ -118,7 +145,10 @@ def recommend_from_artifacts(
     keep_cols = [c for c in preferred_cols if c in catalog_df.columns]
 
     result = catalog_df.iloc[top_idx][keep_cols].copy()
-    result["score"] = scores[top_idx]
+    result["score"] = final_scores[top_idx]
+    result["audio_score"] = audio_scores[top_idx]
+    if genre_scores is not None:
+        result["genre_score"] = genre_scores[top_idx]
     result["rank"] = np.arange(1, len(result) + 1, dtype=int)
 
     if cfg.include_feature_distance and "feature_columns" in artifacts:

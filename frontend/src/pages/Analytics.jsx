@@ -7,9 +7,12 @@ export default function Analytics() {
   const [playlistError, setPlaylistError] = useState('');
   const [playlistResult, setPlaylistResult] = useState(null);
   const [model, setModel] = useState('cosine');
+  const [moodId, setMoodId] = useState('');
+  const [moods, setMoods] = useState([]);
   const [topK, setTopK] = useState(50);
   const [dedupeMode, setDedupeMode] = useState('track_name');
   const [recencyHalflifeDays, setRecencyHalflifeDays] = useState(14);
+  const [genreWeight, setGenreWeight] = useState(0.0);
   const [perTrackK, setPerTrackK] = useState(40);
   const [maxUserTracks, setMaxUserTracks] = useState(0);
   const [minSimilarity, setMinSimilarity] = useState(0.0);
@@ -27,6 +30,19 @@ export default function Analytics() {
       .catch(err => setLoadingError(err.message || 'Failed to load analytics data'));
   }, []);
 
+  useEffect(() => {
+    fetch('http://127.0.0.1:5000/api/moods', { credentials: 'include' })
+      .then(async (res) => {
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) return null;
+        return payload;
+      })
+      .then((json) => {
+        if (json && Array.isArray(json.moods)) setMoods(json.moods);
+      })
+      .catch(() => {});
+  }, []);
+
   const createPlaylist = async () => {
     setIsCreatingPlaylist(true);
     setPlaylistError('');
@@ -37,7 +53,13 @@ export default function Analytics() {
         top_k: Number(topK),
         recency_halflife_days: Number(recencyHalflifeDays),
         dedupe_mode: dedupeMode,
+        genre_weight: Number(genreWeight),
       };
+
+      if (moodId !== '') {
+        requestBody.mood_id = Number(moodId);
+        requestBody.restrict_to_mood = true;
+      }
 
       if (model === 'knn') {
         requestBody.per_track_k = Number(perTrackK);
@@ -103,6 +125,21 @@ export default function Analytics() {
           </select>
         </div>
         <div className="col-md-3">
+          <label className="form-label">Mood (optional)</label>
+          <select
+            className="form-select"
+            value={moodId}
+            onChange={(e) => setMoodId(e.target.value)}
+          >
+            <option value="">All moods</option>
+            {moods.map((m) => (
+              <option key={m.mood_id} value={String(m.mood_id)}>
+                {m.mood_id} — {m.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="col-md-3">
           <label className="form-label">Top K</label>
           <input
             type="number"
@@ -123,6 +160,21 @@ export default function Analytics() {
             value={recencyHalflifeDays}
             onChange={(e) => setRecencyHalflifeDays(e.target.value)}
           />
+        </div>
+        <div className="col-md-3">
+          <label className="form-label">Genre weight (0 = off)</label>
+          <input
+            type="number"
+            className="form-control"
+            min="0"
+            max="1"
+            step="0.05"
+            value={genreWeight}
+            onChange={(e) => setGenreWeight(e.target.value)}
+          />
+          <div className="form-text">
+            Blends audio similarity with genre similarity.
+          </div>
         </div>
         <div className="col-md-4">
           <label className="form-label">Deduplicate by</label>

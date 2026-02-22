@@ -25,6 +25,26 @@ CREATE TABLE IF NOT EXISTS recent_tracks (
     PRIMARY KEY (track_id, collection_date)
 );
 
+-- recent_track_artists: normalized track ↔ artist mapping for recents
+CREATE TABLE IF NOT EXISTS recent_track_artists (
+    track_id TEXT,
+    artist_id TEXT,
+    artist_name TEXT,
+    collection_date DATE NOT NULL,
+    PRIMARY KEY (track_id, artist_id, collection_date)
+);
+
+-- artist_genres: cache artist genres (Spotify exposes genres on artists, not tracks)
+CREATE TABLE IF NOT EXISTS artist_genres (
+    id TEXT,
+    name TEXT,
+    popularity INT,
+    genres TEXT,
+    follower_count INT,
+    collection_date DATE NOT NULL,
+    PRIMARY KEY (id, collection_date)
+);
+
 -- top_artists
 CREATE TABLE IF NOT EXISTS top_artists (
     "Unnamed: 0" INT,  -- original index column

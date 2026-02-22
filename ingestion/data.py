@@ -19,14 +19,27 @@ def insert_dataframe(df, table, constraint):
     col_names = ", ".join(cols)
     values = ", ".join([f":{c}" for c in cols])
 
-    sql = text(f"""
+    sql_with_constraint = text(f"""
         INSERT INTO {table} ({col_names})
         VALUES ({values})
         ON CONFLICT ON CONSTRAINT {constraint} DO NOTHING
+    """) if constraint else None
+
+    sql_generic = text(f"""
+        INSERT INTO {table} ({col_names})
+        VALUES ({values})
+        ON CONFLICT DO NOTHING
     """)
 
     with engine.begin() as conn:
-        conn.execute(sql, df.to_dict(orient="records"))
+        try:
+            if sql_with_constraint is not None:
+                conn.execute(sql_with_constraint, df.to_dict(orient="records"))
+            else:
+                conn.execute(sql_generic, df.to_dict(orient="records"))
+        except Exception:
+            # Fallback for DBs where constraint names differ (e.g. default *_pkey).
+            conn.execute(sql_generic, df.to_dict(orient="records"))
 
 # Database connection
 load_dotenv()
@@ -66,6 +79,16 @@ DATASETS = {
 	"constraint": "top_tracks_pk",
         "columns": ["index", "id", "track_name", "artist_name", "album_name",
                     "release_date", "duration_min", "popularity", "explicit"]
+    },
+    "recent_track_artists.csv": {
+        "table": "recent_track_artists",
+        "constraint": "recent_track_artists_pk",
+        "columns": ["track_id", "artist_id", "artist_name"]
+    },
+    "artist_genres.csv": {
+        "table": "artist_genres",
+        "constraint": "artist_genres_pk",
+        "columns": ["id", "name", "popularity", "genres", "follower_count"]
     }
 }
 

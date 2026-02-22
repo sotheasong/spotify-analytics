@@ -4,7 +4,7 @@ import sys
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import pandas as pd
 import requests
@@ -62,9 +62,10 @@ PROCESSED_RECENT_PATH = DATA_DIR / "processed_recent.csv"
 PROCESSED_TOP_AUDIO_FEATURES_PATH = DATA_DIR / "processed_top_track_audio_features.csv"
 PROCESSED_RECENT_AUDIO_FEATURES_PATH = DATA_DIR / "processed_recent_track_audio_features.csv"
 
-from models.feature_engineering import FeatureEngineeringConfig
-from models.recommenders.cosine import CosineRecommenderConfig, run_cosine_recommender
-from models.recommenders.knn import KNNRecommenderConfig, run_knn_recommender
+from models.feature_engineering import FeatureEngineeringConfig, build_user_profile, run_feature_engineering
+from models.recommenders.cosine import CosineRecommenderConfig, recommend_from_artifacts as cosine_recommend
+from models.recommenders.knn import KNNRecommenderConfig, recommend_from_artifacts as knn_recommend
+from models.moods import centroids_unscaled, ensure_mood_model, predict_moods
 
 
 def ensure_directories() -> None:
@@ -221,11 +222,22 @@ def collect_user_datasets(access_token: str) -> Tuple[pd.DataFrame, pd.DataFrame
 
   df_tracks = clean_top_tracks(tracks)
   df_artists = clean_top_artists(artists)
-  df_recent = clean_recents(recent)
+  df_recent, df_recent_track_artists = clean_recents(recent, return_artist_links=True)
 
   # Spotify IDs
   recent_ids = [t["track"]["id"] for t in recent]
   top_ids = [t["id"] for t in tracks]
+
+  # Artist IDs (for genres)
+  recent_artist_ids: List[str] = []
+  if df_recent_track_artists is not None and not df_recent_track_artists.empty:
+    recent_artist_ids = (
+      df_recent_track_artists["artist_id"]
+      .dropna()
+      .astype(str)
+      .unique()
+      .tolist()
+    )
 
   # Batch helper
   def batch(lst, size):
@@ -243,6 +255,11 @@ def collect_user_datasets(access_token: str) -> Tuple[pd.DataFrame, pd.DataFrame
       url = f"{API_BASE_URL}tracks?ids={','.join(ids)}"
       res = requests.get(url, headers=headers_spotify)
       return res.json().get("tracks", [])
+
+  def fetch_artists_metadata(ids):
+      url = f"{API_BASE_URL}artists?ids={','.join(ids)}"
+      res = requests.get(url, headers=headers_spotify)
+      return res.json().get("artists", [])
 
   # ----------------------------------------------------
   # ------------ HELPER: Safe Matching Logic -----------
@@ -307,12 +324,33 @@ def collect_user_datasets(access_token: str) -> Tuple[pd.DataFrame, pd.DataFrame
   # ----------------------------------------------------
   df_audio_recent = clean_audio_features(df_audio_recent)
   df_audio_top = clean_audio_features(df_audio_top)
-  return df_tracks, df_artists, df_recent, df_audio_top, df_audio_recent
+
+  # ----------------------------------------------------
+  # Artist genres (Spotify: genres live on artists, not tracks)
+  # ----------------------------------------------------
+  # Fetch genres for artists seen in recents, and union with top_artists (already has genres).
+  recent_artists_meta: list[dict] = []
+  for chunk in batch(recent_artist_ids, 50):
+    if not chunk:
+      continue
+    recent_artists_meta.extend(fetch_artists_metadata(chunk))
+
+  df_recent_artists = clean_top_artists(recent_artists_meta) if recent_artists_meta else pd.DataFrame(
+    columns=["id", "name", "popularity", "genres", "follower_count"]
+  )
+
+  df_artist_genres = pd.concat([df_artists, df_recent_artists], ignore_index=True)
+  if not df_artist_genres.empty and "id" in df_artist_genres.columns:
+    df_artist_genres = df_artist_genres.drop_duplicates(subset=["id"], keep="first")
+
+  return df_tracks, df_artists, df_recent, df_recent_track_artists, df_artist_genres, df_audio_top, df_audio_recent
 
 def persist_snapshot(
     df_tracks: pd.DataFrame,
     df_artists: pd.DataFrame,
     df_recent: pd.DataFrame,
+    df_recent_track_artists: pd.DataFrame = None,
+    df_artist_genres: pd.DataFrame = None,
     df_audio_recent: pd.DataFrame = None,
     df_audio_top: pd.DataFrame = None,
     snapshot_time: Optional[datetime] = None
@@ -326,12 +364,20 @@ def persist_snapshot(
   df_tracks.to_csv(snapshot_dir / "top_tracks.csv", index=True)
   df_artists.to_csv(snapshot_dir / "top_artists.csv", index=True)
   df_recent.to_csv(snapshot_dir / "recent_tracks.csv", index=False)
+  if df_recent_track_artists is not None:
+    df_recent_track_artists.to_csv(snapshot_dir / "recent_track_artists.csv", index=False)
+  if df_artist_genres is not None:
+    df_artist_genres.to_csv(snapshot_dir / "artist_genres.csv", index=False)
   df_audio_recent.to_csv(snapshot_dir / "recent_tracks_audio_features.csv", index=False)
   df_audio_top.to_csv(snapshot_dir / "top_tracks_audio_features.csv", index=True)
 
   df_tracks.to_csv(PROCESSED_TRACKS_PATH, index=True)
   df_artists.to_csv(PROCESSED_ARTISTS_PATH, index=True)
   df_recent.to_csv(PROCESSED_RECENT_PATH, index=False)
+  if df_recent_track_artists is not None:
+    df_recent_track_artists.to_csv(DATA_DIR / "processed_recent_track_artists.csv", index=False)
+  if df_artist_genres is not None:
+    df_artist_genres.to_csv(DATA_DIR / "processed_artist_genres.csv", index=False)
   df_audio_recent.to_csv(PROCESSED_RECENT_AUDIO_FEATURES_PATH, index=False)
   df_audio_top.to_csv(PROCESSED_TOP_AUDIO_FEATURES_PATH, index=True)
   return snapshot_dir
@@ -392,9 +438,124 @@ def get_info():
   if not access_token:
     return jsonify({"error": "Not authenticated. Please connect Spotify first."}), 401
 
-  df_tracks, df_artists, df_recent, df_audio_top, df_audio_recent = collect_user_datasets(access_token)
-  # persist_snapshot(df_tracks, df_artists, df_recent, df_audio_recent, df_audio_top)
-  return jsonify({"status": "data fetched and cleaned"})
+  (
+    df_tracks,
+    df_artists,
+    df_recent,
+    df_recent_track_artists,
+    df_artist_genres,
+    df_audio_top,
+    df_audio_recent,
+  ) = collect_user_datasets(access_token)
+
+  # Optional: persist a snapshot on demand (disabled by default).
+  # snapshot_dir = persist_snapshot(
+  #   df_tracks=df_tracks,
+  #   df_artists=df_artists,
+  #   df_recent=df_recent,
+  #   df_recent_track_artists=df_recent_track_artists,
+  #   df_artist_genres=df_artist_genres,
+  #   df_audio_recent=df_audio_recent,
+  #   df_audio_top=df_audio_top,
+  # )
+
+  return jsonify({
+    "status": "data fetched and cleaned",
+    "recent_tracks": int(len(df_recent)),
+    "recent_track_artists": int(len(df_recent_track_artists)) if df_recent_track_artists is not None else 0,
+    "artist_genres": int(len(df_artist_genres)) if df_artist_genres is not None else 0,
+  })
+
+
+@app.route("/api/moods", methods=["GET"])
+def list_moods():
+  """
+  API-only mood summary.
+
+  Uses the EDA-consistent scaler + KMeans model to assign mood_id for each row in df_all.csv
+  (in-memory only; does not persist labels back to disk), and returns per-mood counts.
+  """
+  access_token = get_valid_access_token()
+  if not access_token:
+    return jsonify({"error": "Not authenticated. Please connect Spotify first."}), 401
+
+  # Default to your current direction: 4 clusters.
+  # Optional override for experimentation: /api/moods?k=5
+  try:
+    k_raw = request.args.get("k", "").strip()
+    k = int(k_raw) if k_raw else 7
+    if k <= 1:
+      raise ValueError("k must be >= 2")
+  except Exception as exc:
+    return jsonify({"error": f"Invalid k: {exc}"}), 400
+
+  user_history_csv = DATA_DIR / "raw/df_all.csv"
+  if not user_history_csv.exists():
+    return jsonify({"error": f"Missing user history CSV at {user_history_csv}"}), 404
+
+  try:
+    mood_model = ensure_mood_model(user_history_csv=str(user_history_csv), n_clusters=k)
+    df_all = pd.read_csv(user_history_csv)
+    mood_ids = predict_moods(mood_model, df_all)
+    centers = centroids_unscaled(mood_model)
+  except Exception as exc:
+    return jsonify({"error": f"Failed to compute moods: {exc}"}), 500
+
+  total = int(len(df_all))
+  unknown = int((mood_ids == -1).sum())
+
+  # Representative tracks per mood (default 15, most recent).
+  try:
+    sample_n_raw = request.args.get("n", "").strip()
+    sample_n = int(sample_n_raw) if sample_n_raw else 15
+    sample_n = max(0, min(sample_n, 50))
+  except Exception:
+    sample_n = 15
+
+  df_all = df_all.copy()
+  df_all["_mood_id"] = mood_ids
+  if "collection_date" in df_all.columns:
+    df_all["_collection_date_dt"] = pd.to_datetime(df_all["collection_date"], errors="coerce")
+  else:
+    df_all["_collection_date_dt"] = pd.NaT
+
+  moods = []
+  for mid in range(int(mood_model.kmeans.n_clusters)):
+    count = int((mood_ids == mid).sum())
+    centroid_row = centers[centers["mood_id"] == int(mid)].iloc[0].to_dict()
+    centroid_row.pop("mood_id", None)
+    centroid = {}
+    for kf, vf in centroid_row.items():
+      if pd.isna(vf):
+        centroid[kf] = None
+      else:
+        centroid[kf] = float(vf)
+
+    samples: list[dict[str, object]] = []
+    if sample_n > 0:
+      sdf = df_all[df_all["_mood_id"] == mid].sort_values("_collection_date_dt", ascending=False)
+      take = sdf.head(sample_n)
+      for _, row in take.iterrows():
+        samples.append({
+          "id": row.get("id"),
+          "name": row.get("name"),
+          "collection_date": row.get("collection_date"),
+        })
+    moods.append({
+      "mood_id": int(mid),
+      "name": mood_model.labels.get(mid, f"Cluster {mid}"),
+      "count": count,
+      "fraction": (count / total) if total else 0.0,
+      "centroid": centroid,
+      "samples": samples,
+    })
+
+  return jsonify({
+    "total_rows": total,
+    "unknown_rows": unknown,
+    "k": int(mood_model.kmeans.n_clusters),
+    "moods": moods,
+  })
 
 
 @app.route("/api/recommendations/create-playlist", methods=["POST"])
@@ -408,6 +569,9 @@ def create_recommendations_playlist():
   top_k = int(payload.get("top_k", 50))
   dedupe_mode = payload.get("dedupe_mode", "track_name_artists")
   recency_halflife_days = float(payload.get("recency_halflife_days", 14.0))
+  genre_weight = float(payload.get("genre_weight", 0.0))
+  mood_id = payload.get("mood_id", None)
+  restrict_to_mood = bool(payload.get("restrict_to_mood", True))
 
   try:
     fe_config = FeatureEngineeringConfig(
@@ -416,6 +580,33 @@ def create_recommendations_playlist():
       exclude_seen_tracks=True,
       recency_halflife_days=recency_halflife_days,
     )
+    artifacts = run_feature_engineering(fe_config)
+
+    # Optional mood filtering, using the same clustering setup as EDA.
+    if mood_id is not None and str(mood_id) != "":
+      mood_int = int(mood_id)
+      mood_model = ensure_mood_model(user_history_csv=str(DATA_DIR / "raw/df_all.csv"))
+
+      user_moods = predict_moods(mood_model, artifacts["user_df"])
+      user_mask = (user_moods == mood_int)
+      if not user_mask.any():
+        return jsonify({"error": f"No user history tracks found for mood_id={mood_int}."}), 404
+
+      artifacts["user_df"] = artifacts["user_df"].iloc[user_mask.nonzero()[0]].reset_index(drop=True)
+      artifacts["user_scaled"] = artifacts["user_scaled"][user_mask]
+      artifacts["recency_weights"] = artifacts["recency_weights"][user_mask]
+      artifacts["user_profile"] = build_user_profile(
+        user_scaled=artifacts["user_scaled"],
+        recency_weights=artifacts["recency_weights"],
+      )
+
+      if restrict_to_mood:
+        catalog_moods = predict_moods(mood_model, artifacts["catalog_df"])
+        cat_mask = (catalog_moods == mood_int)
+        if cat_mask.any():
+          artifacts["catalog_df"] = artifacts["catalog_df"].iloc[cat_mask.nonzero()[0]].reset_index(drop=True)
+          artifacts["catalog_scaled"] = artifacts["catalog_scaled"][cat_mask]
+
     if model == "knn":
       per_track_k = int(payload.get("per_track_k", 50))
       max_user_tracks_raw = int(payload.get("max_user_tracks", 0))
@@ -426,17 +617,16 @@ def create_recommendations_playlist():
         max_user_tracks=None if max_user_tracks_raw <= 0 else max_user_tracks_raw,
         dedupe_mode=dedupe_mode,
         min_similarity=min_similarity,
+        genre_weight=genre_weight,
       )
-      recommendations_df, _ = run_knn_recommender(
-        fe_config=fe_config,
-        model_config=knn_config,
-      )
+      recommendations_df = knn_recommend(artifacts=artifacts, config=knn_config)
     else:
-      cosine_config = CosineRecommenderConfig(top_k=top_k, dedupe_mode=dedupe_mode)
-      recommendations_df, _ = run_cosine_recommender(
-        fe_config=fe_config,
-        model_config=cosine_config,
+      cosine_config = CosineRecommenderConfig(
+        top_k=top_k,
+        dedupe_mode=dedupe_mode,
+        genre_weight=genre_weight,
       )
+      recommendations_df = cosine_recommend(artifacts=artifacts, config=cosine_config)
   except Exception as exc:
     return jsonify({"error": f"Failed to generate recommendations: {exc}"}), 500
 

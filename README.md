@@ -12,10 +12,15 @@ Implemented so far:
   - `notebooks/data_EDA.ipynb` (catalog dataset)
 - Feature engineering pipeline:
   - `models/feature_engineering.py`
-- First recommender model (baseline):
-  - `models/recommenders/cosine.py`
-- Simple training/runner CLI:
-  - `models/train.py`
+- Recommender models:
+  - `models/recommenders/cosine.py` (cosine baseline)
+  - `models/recommenders/knn.py` (item-to-item KNN)
+- CLI runners:
+  - `models/train.py` (cosine)
+  - `models/train_knn.py` (KNN)
+- Thin Spotify playlist integration:
+  - Backend: `POST /api/recommendations/create-playlist` (supports `model=cosine|knn`)
+  - Frontend: `frontend/src/pages/Analytics.jsx` (model + params selector, “Open in Spotify”)
 
 ## Recommender pipeline (implemented)
 
@@ -40,7 +45,16 @@ The pipeline currently:
 - Ranks tracks by score descending
 - Returns top-k recommendations with metadata (`track_name`, `artists`, `album_name`, etc.)
 
-### 3) CLI runner (`models/train.py`)
+### 3) Model 2: Item-to-item KNN (`models/recommenders/knn.py`)
+
+- For each listened track, finds `per_track_k` nearest catalog neighbors (cosine distance in feature space)
+- Aggregates candidate scores across all listened tracks using recency weights
+- Supports `max_user_tracks` (most recent N source tracks) and `min_similarity` filtering
+- Uses the same dedupe modes as cosine (`track_name`, `track_name_artists`, `track_id`)
+
+### 4) CLI runners
+
+#### Cosine runner (`models/train.py`)
 
 - Runs feature engineering + cosine model end-to-end
 - Writes recommendations to CSV
@@ -49,12 +63,31 @@ Default output:
 
 - `data/processed/recommendations_cosine.csv`
 
-## How to run the recommender
+#### KNN runner (`models/train_knn.py`)
+
+- Runs feature engineering + KNN model end-to-end
+- Writes recommendations to CSV
+
+Default output:
+
+- `data/processed/recommendations_knn.csv`
+
+## How to run the recommenders
 
 From repo root:
 
 ```bash
 python models/train.py
+```
+
+KNN example:
+
+```bash
+python models/train_knn.py \
+  --top-k 100 \
+  --per-track-k 50 \
+  --dedupe-mode track_name \
+  --output data/processed/recommendations_knn.csv
 ```
 
 Example with options:
@@ -91,8 +124,13 @@ cd backend
 python3 -m venv venv
 source venv/bin/activate  # Windows: .\\venv\\Scripts\\activate
 pip install -r ../requirements.txt
-flask run
+python app.py
 ```
+
+Notes:
+
+- Spotify redirect + frontend session works best when you consistently use `127.0.0.1` for both frontend and backend.
+- Spotify playlist creation requires playlist scopes (already included in `/login`).
 
 Alternative:
 

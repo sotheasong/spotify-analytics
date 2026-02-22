@@ -55,13 +55,24 @@ def main() -> None:
   # Persist a newly issued refresh token for future runs.
   store_refresh_token(token_info.get("refresh_token", refresh_token))
 
-  df_tracks, df_artists, df_recent, df_audio_recent, df_audio_top = collect_user_datasets(access_token)
+  (
+    df_tracks,
+    df_artists,
+    df_recent,
+    df_recent_track_artists,
+    df_artist_genres,
+    df_audio_top,
+    df_audio_recent,
+  ) = collect_user_datasets(access_token)
+
   snapshot_dir = persist_snapshot(
-      df_tracks,
-      df_artists,
-      df_recent,
-      df_audio_recent,
-      df_audio_top,
+      df_tracks=df_tracks,
+      df_artists=df_artists,
+      df_recent=df_recent,
+      df_recent_track_artists=df_recent_track_artists,
+      df_artist_genres=df_artist_genres,
+      df_audio_recent=df_audio_recent,
+      df_audio_top=df_audio_top,
       snapshot_time=datetime.now(timezone.utc)
   )
 
