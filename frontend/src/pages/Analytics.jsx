@@ -13,6 +13,7 @@ export default function Analytics() {
   const [dedupeMode, setDedupeMode] = useState('track_name');
   const [recencyHalflifeDays, setRecencyHalflifeDays] = useState(14);
   const [genreWeight, setGenreWeight] = useState(0.0);
+  const [popularityWeight, setPopularityWeight] = useState(0.0);
   const [perTrackK, setPerTrackK] = useState(40);
   const [maxUserTracks, setMaxUserTracks] = useState(0);
   const [minSimilarity, setMinSimilarity] = useState(0.0);
@@ -54,6 +55,7 @@ export default function Analytics() {
         recency_halflife_days: Number(recencyHalflifeDays),
         dedupe_mode: dedupeMode,
         genre_weight: Number(genreWeight),
+        popularity_weight: Number(popularityWeight),
       };
 
       if (moodId !== '') {
@@ -174,6 +176,21 @@ export default function Analytics() {
           />
           <div className="form-text">
             Blends audio similarity with genre similarity.
+          </div>
+        </div>
+        <div className="col-md-3">
+          <label className="form-label">Popularity weight (0 = off)</label>
+          <input
+            type="number"
+            className="form-control"
+            min="0"
+            max="1"
+            step="0.05"
+            value={popularityWeight}
+            onChange={(e) => setPopularityWeight(e.target.value)}
+          />
+          <div className="form-text">
+            Re-ranks toward globally popular tracks.
           </div>
         </div>
         <div className="col-md-4">

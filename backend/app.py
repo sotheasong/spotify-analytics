@@ -570,6 +570,7 @@ def create_recommendations_playlist():
   dedupe_mode = payload.get("dedupe_mode", "track_name_artists")
   recency_halflife_days = float(payload.get("recency_halflife_days", 14.0))
   genre_weight = float(payload.get("genre_weight", 0.0))
+  popularity_weight = float(payload.get("popularity_weight", 0.0))
   mood_id = payload.get("mood_id", None)
   restrict_to_mood = bool(payload.get("restrict_to_mood", True))
 
@@ -618,6 +619,7 @@ def create_recommendations_playlist():
         dedupe_mode=dedupe_mode,
         min_similarity=min_similarity,
         genre_weight=genre_weight,
+        popularity_weight=popularity_weight,
       )
       recommendations_df = knn_recommend(artifacts=artifacts, config=knn_config)
     else:
@@ -625,6 +627,7 @@ def create_recommendations_playlist():
         top_k=top_k,
         dedupe_mode=dedupe_mode,
         genre_weight=genre_weight,
+        popularity_weight=popularity_weight,
       )
       recommendations_df = cosine_recommend(artifacts=artifacts, config=cosine_config)
   except Exception as exc:

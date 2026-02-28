@@ -12,6 +12,7 @@ from models.recommenders.genre_similarity import (
     blended_rank_score,
     build_genre_similarity_artifacts,
     cosine_similarity_to_profile,
+    rank_normalize,
 )
 
 
@@ -34,6 +35,8 @@ class KNNRecommenderConfig:
     include_debug: bool = False
     # Blend in genre similarity (0 = disabled, 1 = only genre).
     genre_weight: float = 0.0
+    # Blend in catalog popularity as a re-rank term (0 = disabled, 1 = only popularity).
+    popularity_weight: float = 0.0
 
 
 def _normalize_text(value: Any) -> str:
@@ -150,6 +153,17 @@ def recommend_from_artifacts(
                 genre_weight=cfg.genre_weight,
             )
 
+    # Optional popularity re-rank (rank-normalized blend).
+    popularity_norm: np.ndarray | None = None
+    if cfg.popularity_weight and float(cfg.popularity_weight) > 0.0 and "popularity" in catalog_df.columns:
+        popularity_raw = pd.to_numeric(catalog_df["popularity"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        pop_norm = rank_normalize(popularity_raw)
+        popularity_norm = pop_norm
+        base_norm = rank_normalize(final_scores)
+        w = float(cfg.popularity_weight)
+        w = min(max(w, 0.0), 1.0)
+        final_scores = (1.0 - w) * base_norm + w * pop_norm
+
     sorted_idx = np.argsort(final_scores)[::-1]
 
     selected: list[int] = []
@@ -188,6 +202,8 @@ def recommend_from_artifacts(
     result["knn_score"] = scores[top_idx]
     if genre_scores is not None:
         result["genre_score"] = genre_scores[top_idx]
+    if popularity_norm is not None:
+        result["popularity_norm"] = popularity_norm[top_idx]
     result["rank"] = np.arange(1, len(result) + 1, dtype=int)
 
     if cfg.include_debug:
