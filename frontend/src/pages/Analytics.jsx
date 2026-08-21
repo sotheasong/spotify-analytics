@@ -4,8 +4,12 @@ export default function Analytics() {
   const [data, setData] = useState(null);
   const [loadingError, setLoadingError] = useState('');
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
   const [playlistError, setPlaylistError] = useState('');
   const [playlistResult, setPlaylistResult] = useState(null);
+  const [previewError, setPreviewError] = useState('');
+  const [previewResult, setPreviewResult] = useState(null); // { run_id, meta, recommendations }
+  const [hiddenTrackIds, setHiddenTrackIds] = useState(() => new Set());
   const [model, setModel] = useState('cosine');
   const [moodId, setMoodId] = useState('');
   const [moods, setMoods] = useState([]);
@@ -17,6 +21,69 @@ export default function Analytics() {
   const [perTrackK, setPerTrackK] = useState(40);
   const [maxUserTracks, setMaxUserTracks] = useState(0);
   const [minSimilarity, setMinSimilarity] = useState(0.0);
+
+  const buildRequestBody = () => {
+    const requestBody = {
+      model,
+      top_k: Number(topK),
+      recency_halflife_days: Number(recencyHalflifeDays),
+      dedupe_mode: dedupeMode,
+      genre_weight: Number(genreWeight),
+      popularity_weight: Number(popularityWeight),
+    };
+
+    if (moodId !== '') {
+      requestBody.mood_id = Number(moodId);
+      requestBody.restrict_to_mood = true;
+    }
+
+    if (model === 'knn') {
+      requestBody.per_track_k = Number(perTrackK);
+      requestBody.max_user_tracks = Number(maxUserTracks);
+      requestBody.min_similarity = Number(minSimilarity);
+    }
+
+    return requestBody;
+  };
+
+  const previewRecommendations = async () => {
+    setIsPreviewing(true);
+    setPreviewError('');
+    setPreviewResult(null);
+    setHiddenTrackIds(new Set());
+    setPlaylistError('');
+    setPlaylistResult(null);
+
+    try {
+      const requestBody = buildRequestBody();
+      const response = await fetch('http://127.0.0.1:5000/api/recommendations/preview', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to preview recommendations');
+      }
+      setPreviewResult(payload);
+    } catch (err) {
+      setPreviewError(err.message || 'Failed to preview recommendations');
+    } finally {
+      setIsPreviewing(false);
+    }
+  };
+
+  const toggleHidden = (trackId) => {
+    if (!trackId) return;
+    setHiddenTrackIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(trackId)) next.delete(trackId);
+      else next.add(trackId);
+      return next;
+    });
+  };
 
   useEffect(() => {
     fetch('http://127.0.0.1:5000/get-info', { credentials: 'include' })
@@ -49,24 +116,10 @@ export default function Analytics() {
     setPlaylistError('');
     setPlaylistResult(null);
     try {
-      const requestBody = {
-        model,
-        top_k: Number(topK),
-        recency_halflife_days: Number(recencyHalflifeDays),
-        dedupe_mode: dedupeMode,
-        genre_weight: Number(genreWeight),
-        popularity_weight: Number(popularityWeight),
-      };
-
-      if (moodId !== '') {
-        requestBody.mood_id = Number(moodId);
-        requestBody.restrict_to_mood = true;
-      }
-
-      if (model === 'knn') {
-        requestBody.per_track_k = Number(perTrackK);
-        requestBody.max_user_tracks = Number(maxUserTracks);
-        requestBody.min_similarity = Number(minSimilarity);
+      const requestBody = buildRequestBody();
+      if (previewResult && previewResult.run_id) {
+        requestBody.run_id = previewResult.run_id;
+        requestBody.exclude_track_ids = Array.from(hiddenTrackIds);
       }
 
       const response = await fetch('http://127.0.0.1:5000/api/recommendations/create-playlist', {
@@ -243,16 +296,83 @@ export default function Analytics() {
             </div>
           </>
         )}
-        <div className="col-md-5">
+        <div className="col-md-3">
           <button
-            className="btn btn-success w-100"
-            disabled={isCreatingPlaylist}
-            onClick={createPlaylist}
+            className="btn btn-outline-primary w-100"
+            disabled={isPreviewing}
+            onClick={previewRecommendations}
           >
-            {isCreatingPlaylist ? 'Creating Playlist...' : 'Create Recommended Playlist'}
+            {isPreviewing ? 'Loading Preview...' : 'Preview Recommendations'}
           </button>
         </div>
+        <div className="col-md-4">
+          <button
+            className="btn btn-success w-100"
+            disabled={isCreatingPlaylist || !previewResult}
+            onClick={createPlaylist}
+          >
+            {isCreatingPlaylist ? 'Creating Playlist...' : 'Create Playlist (Reviewed)'}
+          </button>
+          <div className="form-text">
+            Preview first, then hide tracks that don’t fit the vibe.
+          </div>
+        </div>
       </div>
+
+      {previewError && (
+        <div className="alert alert-danger" role="alert">
+          {previewError}
+        </div>
+      )}
+
+      {previewResult && Array.isArray(previewResult.recommendations) && (
+        <div className="card mb-3">
+          <div className="card-body">
+            <div className="d-flex justify-content-between align-items-center mb-2">
+              <h5 className="card-title mb-0">Preview</h5>
+              <div className="text-muted small">
+                Hidden: {hiddenTrackIds.size} / {previewResult.recommendations.length}
+              </div>
+            </div>
+            <div className="table-responsive">
+              <table className="table table-sm align-middle">
+                <thead>
+                  <tr>
+                    <th style={{ width: 90 }}>Hide</th>
+                    <th>Track</th>
+                    <th style={{ width: 110 }}>Score</th>
+                    <th style={{ width: 140 }}>Genre</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewResult.recommendations.map((r, idx) => {
+                    const tid = String(r.track_id ?? r.id ?? '');
+                    const hidden = tid && hiddenTrackIds.has(tid);
+                    return (
+                      <tr key={`${tid}-${idx}`} className={hidden ? 'table-secondary' : ''}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={hidden}
+                            onChange={() => toggleHidden(tid)}
+                            disabled={!tid}
+                          />
+                        </td>
+                        <td>
+                          <div className="fw-semibold">{r.track_name || '(unknown)'}</div>
+                          <div className="text-muted small">{r.artists || ''}</div>
+                        </td>
+                        <td>{typeof r.score === 'number' ? r.score.toFixed(4) : ''}</td>
+                        <td className="text-muted small">{r.track_genre || ''}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {playlistError && (
         <div className="alert alert-danger" role="alert">

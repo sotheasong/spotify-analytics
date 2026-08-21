@@ -1,7 +1,9 @@
 import json
 import os
 import sys
+import time
 import urllib.parse
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, List
@@ -54,6 +56,8 @@ API_BASE_URL = "https://api.spotify.com/v1/"
 
 DATA_DIR = REPO_ROOT / "data"
 HISTORY_DIR = DATA_DIR / "history"
+FEEDBACK_DIR = DATA_DIR / "feedback"
+TRACK_FEEDBACK_PATH = FEEDBACK_DIR / "track_feedback.jsonl"
 AUTH_DIR = REPO_ROOT / "auth"
 REFRESH_TOKEN_PATH = AUTH_DIR / "refresh_token.json"
 PROCESSED_TRACKS_PATH = DATA_DIR / "processed_tracks.csv"
@@ -70,11 +74,128 @@ from models.moods import centroids_unscaled, ensure_mood_model, predict_moods
 
 def ensure_directories() -> None:
   """Ensure that filesystem locations used by the app exist."""
-  for path in (DATA_DIR, HISTORY_DIR, AUTH_DIR):
+  for path in (DATA_DIR, HISTORY_DIR, AUTH_DIR, FEEDBACK_DIR):
     path.mkdir(parents=True, exist_ok=True)
 
 
 ensure_directories()
+
+
+# Ephemeral store for recommendation preview runs. Intended for local dev.
+RECOMMENDATION_RUNS: dict[str, dict] = {}
+RECOMMENDATION_RUN_TTL_SECONDS = 60 * 30
+
+
+def _prune_recommendation_runs() -> None:
+  now = time.time()
+  expired = [rid for rid, meta in RECOMMENDATION_RUNS.items() if (now - float(meta.get("created_at", 0))) > RECOMMENDATION_RUN_TTL_SECONDS]
+  for rid in expired:
+    RECOMMENDATION_RUNS.pop(rid, None)
+
+
+def _append_feedback_events(events: list[dict]) -> None:
+  if not events:
+    return
+  FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+  with TRACK_FEEDBACK_PATH.open("a", encoding="utf-8") as f:
+    for ev in events:
+      f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
+
+def _extract_track_ids_from_recs_df(df: pd.DataFrame) -> tuple[list[str], str]:
+  id_candidates = df.get("track_id")
+  if id_candidates is None:
+    id_candidates = df.get("id")
+  if id_candidates is None:
+    raise ValueError("Recommender output does not include track IDs.")
+  ids: list[str] = []
+  for raw_id in id_candidates.astype(str).tolist():
+    tid = raw_id.strip()
+    if not tid or tid.lower() == "nan":
+      continue
+    ids.append(tid)
+  # Preserve order while de-duping.
+  ids = list(dict.fromkeys(ids))
+  return ids, ("track_id" if "track_id" in df.columns else "id")
+
+
+def _generate_recommendations_df(payload: dict) -> tuple[pd.DataFrame, dict]:
+  model = str(payload.get("model", "cosine")).strip().lower()
+  top_k = int(payload.get("top_k", 50))
+  dedupe_mode = payload.get("dedupe_mode", "track_name_artists")
+  recency_halflife_days = float(payload.get("recency_halflife_days", 14.0))
+  genre_weight = float(payload.get("genre_weight", 0.0))
+  popularity_weight = float(payload.get("popularity_weight", 0.0))
+  mood_id = payload.get("mood_id", None)
+  restrict_to_mood = bool(payload.get("restrict_to_mood", True))
+
+  fe_config = FeatureEngineeringConfig(
+    user_history_csv=str(DATA_DIR / "raw/df_all.csv"),
+    catalog_csv=str(DATA_DIR / "raw/spotify-tracks.csv"),
+    exclude_seen_tracks=True,
+    recency_halflife_days=recency_halflife_days,
+  )
+  artifacts = run_feature_engineering(fe_config)
+
+  # Optional mood filtering, using the same clustering setup as EDA.
+  if mood_id is not None and str(mood_id) != "":
+    mood_int = int(mood_id)
+    mood_model = ensure_mood_model(user_history_csv=str(DATA_DIR / "raw/df_all.csv"))
+
+    user_moods = predict_moods(mood_model, artifacts["user_df"])
+    user_mask = (user_moods == mood_int)
+    if not user_mask.any():
+      raise ValueError(f"No user history tracks found for mood_id={mood_int}.")
+
+    artifacts["user_df"] = artifacts["user_df"].iloc[user_mask.nonzero()[0]].reset_index(drop=True)
+    artifacts["user_scaled"] = artifacts["user_scaled"][user_mask]
+    artifacts["recency_weights"] = artifacts["recency_weights"][user_mask]
+    artifacts["user_profile"] = build_user_profile(
+      user_scaled=artifacts["user_scaled"],
+      recency_weights=artifacts["recency_weights"],
+    )
+
+    if restrict_to_mood:
+      catalog_moods = predict_moods(mood_model, artifacts["catalog_df"])
+      cat_mask = (catalog_moods == mood_int)
+      if cat_mask.any():
+        artifacts["catalog_df"] = artifacts["catalog_df"].iloc[cat_mask.nonzero()[0]].reset_index(drop=True)
+        artifacts["catalog_scaled"] = artifacts["catalog_scaled"][cat_mask]
+
+  if model == "knn":
+    per_track_k = int(payload.get("per_track_k", 50))
+    max_user_tracks_raw = int(payload.get("max_user_tracks", 0))
+    min_similarity = float(payload.get("min_similarity", 0.0))
+    knn_config = KNNRecommenderConfig(
+      top_k=top_k,
+      per_track_k=per_track_k,
+      max_user_tracks=None if max_user_tracks_raw <= 0 else max_user_tracks_raw,
+      dedupe_mode=dedupe_mode,
+      min_similarity=min_similarity,
+      genre_weight=genre_weight,
+      popularity_weight=popularity_weight,
+    )
+    recs_df = knn_recommend(artifacts=artifacts, config=knn_config)
+  else:
+    cosine_config = CosineRecommenderConfig(
+      top_k=top_k,
+      dedupe_mode=dedupe_mode,
+      genre_weight=genre_weight,
+      popularity_weight=popularity_weight,
+    )
+    recs_df = cosine_recommend(artifacts=artifacts, config=cosine_config)
+
+  meta = {
+    "model": model,
+    "top_k": top_k,
+    "dedupe_mode": dedupe_mode,
+    "recency_halflife_days": recency_halflife_days,
+    "genre_weight": genre_weight,
+    "popularity_weight": popularity_weight,
+    "mood_id": mood_id,
+    "restrict_to_mood": restrict_to_mood,
+  }
+  return recs_df, meta
 
 
 def store_refresh_token(refresh_token_value: str) -> None:
@@ -565,95 +686,62 @@ def create_recommendations_playlist():
     return jsonify({"error": "Not authenticated. Please connect Spotify first."}), 401
 
   payload = request.get_json(silent=True) or {}
-  model = str(payload.get("model", "cosine")).strip().lower()
-  top_k = int(payload.get("top_k", 50))
-  dedupe_mode = payload.get("dedupe_mode", "track_name_artists")
-  recency_halflife_days = float(payload.get("recency_halflife_days", 14.0))
-  genre_weight = float(payload.get("genre_weight", 0.0))
-  popularity_weight = float(payload.get("popularity_weight", 0.0))
-  mood_id = payload.get("mood_id", None)
-  restrict_to_mood = bool(payload.get("restrict_to_mood", True))
+  run_id = str(payload.get("run_id", "")).strip()
+  exclude_track_ids = payload.get("exclude_track_ids", []) or []
+  if not isinstance(exclude_track_ids, list):
+    exclude_track_ids = []
+  exclude_set = set(str(x).strip() for x in exclude_track_ids if str(x).strip())
 
   try:
-    fe_config = FeatureEngineeringConfig(
-      user_history_csv=str(DATA_DIR / "raw/df_all.csv"),
-      catalog_csv=str(DATA_DIR / "raw/spotify-tracks.csv"),
-      exclude_seen_tracks=True,
-      recency_halflife_days=recency_halflife_days,
-    )
-    artifacts = run_feature_engineering(fe_config)
+    _prune_recommendation_runs()
+    track_ids: list[str] | None = None
+    if run_id and run_id in RECOMMENDATION_RUNS:
+      track_ids = [str(t) for t in RECOMMENDATION_RUNS[run_id].get("track_ids", [])]
 
-    # Optional mood filtering, using the same clustering setup as EDA.
-    if mood_id is not None and str(mood_id) != "":
-      mood_int = int(mood_id)
-      mood_model = ensure_mood_model(user_history_csv=str(DATA_DIR / "raw/df_all.csv"))
+    if track_ids is None:
+      recommendations_df, meta = _generate_recommendations_df(payload)
+      if recommendations_df.empty:
+        return jsonify({"error": "No recommendations generated."}), 404
+      track_ids, _ = _extract_track_ids_from_recs_df(recommendations_df)
+      if not track_ids:
+        return jsonify({"error": "No valid track IDs found for playlist creation."}), 404
 
-      user_moods = predict_moods(mood_model, artifacts["user_df"])
-      user_mask = (user_moods == mood_int)
-      if not user_mask.any():
-        return jsonify({"error": f"No user history tracks found for mood_id={mood_int}."}), 404
-
-      artifacts["user_df"] = artifacts["user_df"].iloc[user_mask.nonzero()[0]].reset_index(drop=True)
-      artifacts["user_scaled"] = artifacts["user_scaled"][user_mask]
-      artifacts["recency_weights"] = artifacts["recency_weights"][user_mask]
-      artifacts["user_profile"] = build_user_profile(
-        user_scaled=artifacts["user_scaled"],
-        recency_weights=artifacts["recency_weights"],
-      )
-
-      if restrict_to_mood:
-        catalog_moods = predict_moods(mood_model, artifacts["catalog_df"])
-        cat_mask = (catalog_moods == mood_int)
-        if cat_mask.any():
-          artifacts["catalog_df"] = artifacts["catalog_df"].iloc[cat_mask.nonzero()[0]].reset_index(drop=True)
-          artifacts["catalog_scaled"] = artifacts["catalog_scaled"][cat_mask]
-
-    if model == "knn":
-      per_track_k = int(payload.get("per_track_k", 50))
-      max_user_tracks_raw = int(payload.get("max_user_tracks", 0))
-      min_similarity = float(payload.get("min_similarity", 0.0))
-      knn_config = KNNRecommenderConfig(
-        top_k=top_k,
-        per_track_k=per_track_k,
-        max_user_tracks=None if max_user_tracks_raw <= 0 else max_user_tracks_raw,
-        dedupe_mode=dedupe_mode,
-        min_similarity=min_similarity,
-        genre_weight=genre_weight,
-        popularity_weight=popularity_weight,
-      )
-      recommendations_df = knn_recommend(artifacts=artifacts, config=knn_config)
-    else:
-      cosine_config = CosineRecommenderConfig(
-        top_k=top_k,
-        dedupe_mode=dedupe_mode,
-        genre_weight=genre_weight,
-        popularity_weight=popularity_weight,
-      )
-      recommendations_df = cosine_recommend(artifacts=artifacts, config=cosine_config)
+    # Apply user exclusions ("doesn't fit vibe") if provided.
+    if exclude_set:
+      track_ids = [t for t in track_ids if t not in exclude_set]
   except Exception as exc:
     return jsonify({"error": f"Failed to generate recommendations: {exc}"}), 500
 
-  if recommendations_df.empty:
-    return jsonify({"error": "No recommendations generated."}), 404
-
-  id_candidates = recommendations_df.get("track_id")
-  if id_candidates is None:
-    id_candidates = recommendations_df.get("id")
-  if id_candidates is None:
-    return jsonify({"error": "Recommender output does not include track IDs."}), 500
-
   track_uris: list[str] = []
-  for raw_id in id_candidates.astype(str).tolist():
-    track_id = raw_id.strip()
-    if not track_id or track_id.lower() == "nan":
-      continue
-    track_uris.append(f"spotify:track:{track_id}")
+  for tid in track_ids:
+    track_uris.append(f"spotify:track:{tid}")
 
-  track_uris = list(dict.fromkeys(track_uris))
   if not track_uris:
     return jsonify({"error": "No valid track URIs found for playlist creation."}), 404
 
   try:
+    # Record exclusions as feedback events (offline collection).
+    if exclude_set:
+      user_id = None
+      try:
+        user_id = get_current_user_profile(access_token).get("id")
+      except Exception:
+        user_id = None
+      now_iso = datetime.now(timezone.utc).isoformat()
+      fb = []
+      for tid in sorted(exclude_set):
+        fb.append({
+          "ts": now_iso,
+          "user_id": user_id,
+          "event": "hide_track",
+          "reason": "does_not_fit_vibe",
+          "track_id": tid,
+          "run_id": run_id or None,
+          "model": str(payload.get("model", "cosine")).strip().lower(),
+          "mood_id": payload.get("mood_id", None),
+        })
+      _append_feedback_events(fb)
+
     me = get_current_user_profile(access_token)
     created = create_spotify_playlist(
       access_token=access_token,
@@ -677,7 +765,59 @@ def create_recommendations_playlist():
     "playlist_url": created.get("external_urls", {}).get("spotify"),
     "playlist_uri": created.get("uri"),
     "tracks_added": len(track_uris),
+    "tracks_excluded": len(exclude_set),
   })
+
+
+@app.route("/api/recommendations/preview", methods=["POST"])
+def preview_recommendations():
+  access_token = get_valid_access_token()
+  if not access_token:
+    return jsonify({"error": "Not authenticated. Please connect Spotify first."}), 401
+
+  payload = request.get_json(silent=True) or {}
+  try:
+    _prune_recommendation_runs()
+    recs_df, meta = _generate_recommendations_df(payload)
+    if recs_df.empty:
+      return jsonify({"error": "No recommendations generated."}), 404
+
+    track_ids, id_col = _extract_track_ids_from_recs_df(recs_df)
+    if not track_ids:
+      return jsonify({"error": "No valid track IDs found."}), 404
+
+    # Build a compact JSON-friendly list for the UI.
+    preferred_cols = [
+      id_col,
+      "track_name",
+      "artists",
+      "album_name",
+      "score",
+      "audio_score",
+      "knn_score",
+      "genre_score",
+      "popularity_norm",
+      "track_genre",
+    ]
+    cols = [c for c in preferred_cols if c in recs_df.columns]
+    recs_out: list[dict] = []
+    for _, row in recs_df[cols].iterrows():
+      recs_out.append({k: (None if pd.isna(v) else v) for k, v in row.to_dict().items()})
+
+    rid = uuid.uuid4().hex
+    RECOMMENDATION_RUNS[rid] = {
+      "created_at": time.time(),
+      "track_ids": track_ids,
+      "meta": meta,
+    }
+
+    return jsonify({
+      "run_id": rid,
+      "meta": meta,
+      "recommendations": recs_out,
+    })
+  except Exception as exc:
+    return jsonify({"error": f"Failed to generate recommendations: {exc}"}), 500
 
 
 

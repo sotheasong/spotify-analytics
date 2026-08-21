@@ -34,6 +34,7 @@ class FeatureEngineeringConfig:
     user_id_column: str = "id"
     catalog_id_column: str = "track_id"
     dropna_features: bool = True
+
     exclude_seen_tracks: bool = True
     recency_halflife_days: float = 14.0
     feature_weights: dict[str, float] | None = None
